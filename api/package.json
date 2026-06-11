@@ -1,0 +1,20 @@
+{
+  "name": "taskqueue-api",
+  "version": "1.0.0",
+  "description": "TaskQueue REST API server",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
+    "dotenv": "^17.4.2",
+    "express": "^4.18.2",
+    "groq-sdk": "^1.2.1",
+    "ioredis": "^5.3.2",
+    "pg": "^8.11.3",
+    "uuid": "^9.0.0",
+    "ws": "^8.21.0"
+  }
+}
