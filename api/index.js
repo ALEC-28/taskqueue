@@ -1,11 +1,12 @@
-require('dotenv').config();
 const { startScheduler } = require('./scheduler');
 const { startWebSocketServer, broadcastJobUpdate } = require('./ws');
 const express = require('express');
+const cors = require('cors');
 const { query } = require('./db');
 const { enqueue } = require('./queue');
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
 // ── POST /jobs ─────────────────────────────────────────────
@@ -178,5 +179,25 @@ app.post('/workflows/generate', async (req, res) => {
   } catch (err) {
     console.error('[api] /workflows/generate error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /jobs/:id/requeue ─────────────────────────────────
+// Reset a failed job and push it back onto its queue
+app.post('/jobs/:id/requeue', async (req, res) => {
+  try {
+    const [job] = await query(
+      `UPDATE jobs SET status = 'pending', attempts = 0, error = NULL, run_at = NULL
+       WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    if (!job) return res.status(404).json({ error: 'job not found' });
+    await enqueue(job.queue, job.id);
+    broadcastJobUpdate(job);
+    console.log(`[api] job ${job.id} requeued manually`);
+    res.json(job);
+  } catch (err) {
+    console.error('[api] requeue error:', err.message);
+    res.status(500).json({ error: 'failed to requeue job' });
   }
 });
