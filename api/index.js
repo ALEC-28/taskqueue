@@ -9,9 +9,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── POST /jobs ─────────────────────────────────────────────
-// Submit a new job. Body: { name, queue?, payload?, max_attempts? }
-// Returns: { id, name, queue, status, created_at }
 app.post('/jobs', async (req, res) => {
   const { name, queue = 'default', payload = {}, max_attempts = 5 } = req.body;
   const delay_seconds = parseInt(req.body.delay_seconds || 0, 10);
@@ -28,7 +25,6 @@ app.post('/jobs', async (req, res) => {
       [name, queue, JSON.stringify(payload), max_attempts, delay_seconds]
     );
 
-    // Only push to Redis immediately if no delay — delayed jobs are picked up by scheduler
     if (delay_seconds === 0) await enqueue(queue, job.id);
     else console.log(`[api] delayed job ${job.id} scheduled in ${delay_seconds}s`);
 
@@ -41,8 +37,6 @@ app.post('/jobs', async (req, res) => {
   }
 });
 
-// ── GET /jobs/:id ──────────────────────────────────────────
-// Get the current status of a job by its UUID
 app.get('/jobs/:id', async (req, res) => {
   try {
     const [job] = await query(
@@ -60,8 +54,6 @@ app.get('/jobs/:id', async (req, res) => {
   }
 });
 
-// ── GET /jobs ──────────────────────────────────────────────
-// List recent jobs (latest 50) — used by dashboard
 app.get('/jobs', async (req, res) => {
   try {
     const { status, queue, limit = 50 } = req.query;
@@ -83,19 +75,30 @@ app.get('/jobs', async (req, res) => {
   }
 });
 
-// ── GET /health ────────────────────────────────────────────
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date() }));
+
+app.get('/workers', async (req, res) => {
+  try {
+    const workers = await query(
+      `SELECT DISTINCT ON (worker_id) worker_id, id as current_job_id, updated_at as last_heartbeat
+       FROM jobs
+       WHERE worker_id IS NOT NULL
+       ORDER BY worker_id, updated_at DESC`
+    );
+    res.json(workers);
+  } catch (err) {
+    console.error('[api] GET /workers error:', err.message);
+    res.status(500).json({ error: 'failed to fetch workers' });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 startWebSocketServer();
 startScheduler();
 app.listen(PORT, () => console.log(`[api] listening on http://localhost:${PORT}`));
 
-// ── Workflow Routes ────────────────────────────────────────
 const { createWorkflow } = require('./workflow');
 
-// POST /workflows — submit a workflow DAG
-// Body: { name, steps: [{ name, job_name, queue?, payload?, depends_on? }] }
 app.post('/workflows', async (req, res) => {
   const { name, steps } = req.body;
   if (!name || !steps || !Array.isArray(steps) || steps.length === 0) {
@@ -110,7 +113,6 @@ app.post('/workflows', async (req, res) => {
   }
 });
 
-// GET /workflows/:id — get workflow + all step statuses
 app.get('/workflows/:id', async (req, res) => {
   try {
     const [workflow] = await query(
@@ -134,7 +136,6 @@ app.get('/workflows/:id', async (req, res) => {
   }
 });
 
-// GET /workflows — list all workflows
 app.get('/workflows', async (req, res) => {
   try {
     const workflows = await query(
@@ -146,15 +147,12 @@ app.get('/workflows', async (req, res) => {
   }
 });
 
-// ── Internal Step Completion Callback ─────────────────────
-// Called by workers when a workflow step finishes
 const { onStepComplete } = require('./workflow');
 
 app.post('/internal/step-complete', async (req, res) => {
   const { workflow_id, step_id, success, error } = req.body;
   try {
     await onStepComplete(workflow_id, step_id, success, error);
-    // broadcast updated job to dashboard
     const jobs = await query('SELECT * FROM jobs WHERE id = (SELECT job_id FROM workflow_steps WHERE id = $1)', [step_id]);
     if (jobs[0]) broadcastJobUpdate(jobs[0]);
     res.json({ ok: true });
@@ -164,8 +162,6 @@ app.post('/internal/step-complete', async (req, res) => {
   }
 });
 
-// ── POST /workflows/generate ───────────────────────────────
-// Natural language → DAG workflow using LLM
 const { generateWorkflowFromText } = require('./ai');
 
 app.post('/workflows/generate', async (req, res) => {
@@ -182,8 +178,6 @@ app.post('/workflows/generate', async (req, res) => {
   }
 });
 
-// ── POST /jobs/:id/requeue ─────────────────────────────────
-// Reset a failed job and push it back onto its queue
 app.post('/jobs/:id/requeue', async (req, res) => {
   try {
     const [job] = await query(
