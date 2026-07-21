@@ -33,3 +33,34 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER jobs_updated_at
   BEFORE UPDATE ON jobs
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- Workflows table: parent record for a DAG workflow run
+CREATE TABLE IF NOT EXISTS workflows (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','running','done','failed')),
+  created_at  TIMESTAMPTZ DEFAULT now(),
+  updated_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- Workflow steps: individual DAG nodes, linked to a job when enqueued
+CREATE TABLE IF NOT EXISTS workflow_steps (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_id UUID NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  job_id      UUID REFERENCES jobs(id),
+  name        TEXT NOT NULL,
+  job_name    TEXT NOT NULL,
+  queue       TEXT NOT NULL DEFAULT 'default',
+  payload     JSONB DEFAULT '{}',
+  depends_on  TEXT[] DEFAULT '{}',
+  status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','running','done','failed')),
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow ON workflow_steps(workflow_id);
+
+CREATE TRIGGER workflows_updated_at
+  BEFORE UPDATE ON workflows
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
