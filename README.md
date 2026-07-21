@@ -17,7 +17,8 @@ A self-hosted, production-grade background job processing system built from firs
 - **Delayed jobs** — schedule jobs to run after N seconds
 - **Live observability dashboard** — real-time React UI with WebSocket updates
 - **Horizontal scaling** — run multiple workers, load distributes automatically
-
+- **TypeScript SDK** — `taskqueue-js` with full type declarations
+- **CLI** — `tq` command for jobs, workers, workflows from the terminal
 ---
 
 ## Tech Stack
@@ -121,6 +122,18 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173)
 
+### 7. Install CLI (optional)
+```bash
+cd tq-cli
+npm install
+npm run build
+npm link
+```
+```bash
+tq jobs list
+tq workers status
+```
+
 ---
 
 ## API Reference
@@ -156,6 +169,12 @@ curl -X POST http://localhost:3000/jobs \
 | GET | `/workflows/:id` | Get workflow + step status |
 | GET | `/workflows` | List all workflows |
 | POST | `/workflows/generate` | Generate workflow from natural language |
+
+### Workers
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/workers` | List worker health (id, current job, last heartbeat) |
 
 **Submit a DAG workflow:**
 ```bash
