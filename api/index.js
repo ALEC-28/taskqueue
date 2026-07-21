@@ -139,7 +139,11 @@ app.get('/workflows/:id', async (req, res) => {
 app.get('/workflows', async (req, res) => {
   try {
     const workflows = await query(
-      `SELECT * FROM workflows ORDER BY created_at DESC LIMIT 20`
+      `SELECT w.*, COUNT(ws.id)::int AS step_count
+       FROM workflows w
+       LEFT JOIN workflow_steps ws ON ws.workflow_id = w.id
+       GROUP BY w.id
+       ORDER BY w.created_at DESC LIMIT 20`
     );
     res.json(workflows);
   } catch (err) {
