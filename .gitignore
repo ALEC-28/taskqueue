@@ -2,3 +2,5 @@ node_modules/
 .env
 tq-ccli/dist/
 tq-ccli/node_modules/
+tq-cli/dist/
+tq-cli/node_modules/
