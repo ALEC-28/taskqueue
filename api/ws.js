@@ -20,4 +20,23 @@ function broadcastJobUpdate(job) {
   });
 }
 
-module.exports = { startWebSocketServer, broadcastJobUpdate };
+// Broadcast a client status update to all connected dashboard clients
+function broadcastClientUpdate(client) {
+  if (!wss) return;
+  const msg = JSON.stringify({ type: 'client_update', client });
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) client.send(msg);
+  });
+}
+
+// Broadcast a system/recovery activity event
+function broadcastEvent(event) {
+  if (!wss) return;
+  const msg = JSON.stringify({ type: 'system_event', event });
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) client.send(msg);
+  });
+}
+
+module.exports = { startWebSocketServer, broadcastJobUpdate, broadcastClientUpdate, broadcastEvent };
+

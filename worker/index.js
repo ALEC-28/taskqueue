@@ -12,7 +12,7 @@ const redis = new Redis({
 
 const db = new Pool({
   host:     process.env.POSTGRES_HOST || 'localhost',
-  port:     process.env.POSTGRES_PORT || 5432,
+  port:     process.env.POSTGRES_PORT || 55432,
   database: process.env.POSTGRES_DB   || 'taskqueue',
   user:     process.env.POSTGRES_USER || 'admin',
   password: process.env.POSTGRES_PASS || 'secret',
@@ -62,11 +62,39 @@ const handlers = {
     throw new Error('intentional failure for retry demo');
   },
 
+  fl_training: async (payload) => {
+    const { client_id, fl_round, duration_ms = 500, should_fail = false } = payload;
+    console.log(`  → [FL] Starting round ${fl_round} training task on client '${client_id}'`);
+
+    if (client_id) {
+      await db.query(
+        `UPDATE fl_clients SET status = 'busy', last_heartbeat = now() WHERE client_id = $1`,
+        [client_id]
+      );
+    }
+
+    await sleep(duration_ms);
+
+    if (should_fail) {
+      throw new Error(`FL training simulated failure on client ${client_id} for round ${fl_round}`);
+    }
+
+    console.log(`  → [FL] Completed round ${fl_round} training task on client '${client_id}'`);
+
+    if (client_id) {
+      await db.query(
+        `UPDATE fl_clients SET status = 'available', successful_task_count = successful_task_count + 1, last_heartbeat = now() WHERE client_id = $1`,
+        [client_id]
+      );
+    }
+  },
+
   default: async (payload) => {
     console.log(`  → executing with payload:`, JSON.stringify(payload));
     await sleep(200);
   },
 };
+
 
 // ── Heartbeat ──────────────────────────────────────────────
 // While a job is running, ping Redis every 10s so the scheduler
@@ -146,6 +174,8 @@ async function run() {
   }
 }
 
+const { findReplacementClient } = require('../api/flClient');
+
 // ── Process a Single Job ───────────────────────────────────
 async function processJob(jobId) {
   const { rows } = await db.query(`SELECT * FROM jobs WHERE id = $1`, [jobId]);
@@ -179,12 +209,26 @@ async function processJob(jobId) {
 
     stopHeartbeat(hb);
     const duration = Date.now() - start;
+
+    // Duplicate Execution Protection: verify job hasn't been completed or reassigned elsewhere while running
+    const { rows: currentJobRows } = await db.query(`SELECT status, worker_id, payload FROM jobs WHERE id = $1`, [jobId]);
+    const currentJob = currentJobRows[0];
+    if (!currentJob || currentJob.status === 'done') {
+      console.warn(`[worker] ⚠️ Duplicate execution detected: job ${jobId.slice(0,8)}… already completed. Suppressing redundant completion.`);
+      return;
+    }
+    const currentPayload = currentJob.payload || {};
+    const originalPayload = job.payload || {};
+    if (originalPayload.client_id && currentPayload.client_id && originalPayload.client_id !== currentPayload.client_id) {
+      console.warn(`[worker] ⚠️ Job ${jobId.slice(0,8)}… was reassigned from '${originalPayload.client_id}' to '${currentPayload.client_id}' while running. Suppressing stale result.`);
+      return;
+    }
+
     await db.query(`UPDATE jobs SET status = 'done', error = NULL WHERE id = $1`, [jobId]);
     console.log(`[worker] ✓ job ${jobId.slice(0,8)}… done in ${duration}ms`);
     // Notify workflow engine if this is a workflow step
-    const payload = job.payload || {};
-    if (payload._workflow_id) {
-      notifyWorkflow(payload._workflow_id, payload._step_id, true, null);
+    if (originalPayload._workflow_id) {
+      notifyWorkflow(originalPayload._workflow_id, originalPayload._step_id, true, null);
     }
 
   } catch (err) {
@@ -192,14 +236,44 @@ async function processJob(jobId) {
     const duration = Date.now() - start;
     console.error(`[worker] ✗ job ${jobId.slice(0,8)}… failed after ${duration}ms:`, err.message);
 
-    if (job.attempts + 1 >= job.max_attempts) {
+    const payload = job.payload || {};
+    let replacementClient = null;
+
+    if (payload.client_id) {
+      // Mark assigned client unhealthy/offline
+      await db.query(
+        `UPDATE fl_clients
+         SET failure_count = failure_count + 1, status = 'unhealthy', last_heartbeat = now()
+         WHERE client_id = $1`,
+        [payload.client_id]
+      );
+
+      // Attempt dynamic client replacement for FL training tasks
+      if (job.name === 'fl_training') {
+        try {
+          replacementClient = await findReplacementClient(payload.client_id);
+        } catch (repErr) {
+          console.error('[worker] Error finding replacement client:', repErr.message);
+        }
+      }
+    }
+
+    if (replacementClient && job.attempts < job.max_attempts) {
+      console.log(`[worker] 🔄 Dynamic Client Replacement: reassigning job ${jobId.slice(0,8)}… from '${payload.client_id}' to '${replacementClient.client_id}'`);
+      const newPayload = { ...payload, client_id: replacementClient.client_id };
+      await db.query(
+        `UPDATE jobs SET payload = $1, status = 'pending', worker_id = NULL, error = $2 WHERE id = $3`,
+        [JSON.stringify(newPayload), `Client ${payload.client_id} failed; reassigned to ${replacementClient.client_id}`, jobId]
+      );
+      // Re-enqueue for replacement client execution
+      await redis.lpush(`queue:${job.queue}`, jobId);
+    } else if (job.attempts >= job.max_attempts) {
       await db.query(
         `UPDATE jobs SET status = 'failed', error = $1 WHERE id = $2`,
         [err.message, jobId]
       );
       console.log(`[worker] job ${jobId.slice(0,8)}… permanently failed after ${job.max_attempts} attempts`);
-      const p = job.payload || {};
-      if (p._workflow_id) notifyWorkflow(p._workflow_id, p._step_id, false, err.message);
+      if (payload._workflow_id) notifyWorkflow(payload._workflow_id, payload._step_id, false, err.message);
     } else {
       const backoffMs = Math.pow(2, job.attempts) * 1000;
       const runAt = new Date(Date.now() + backoffMs);
@@ -214,6 +288,7 @@ async function processJob(jobId) {
       }, backoffMs);
     }
   }
+
 }
 
 
