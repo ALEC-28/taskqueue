@@ -62,7 +62,7 @@ app.get('/jobs', async (req, res) => {
     const params = [];
 
     if (status) { params.push(status); sql += ` AND status = $${params.length}`; }
-    if (queue)  { params.push(queue);  sql += ` AND queue  = $${params.length}`; }
+    if (queue) { params.push(queue); sql += ` AND queue  = $${params.length}`; }
 
     params.push(parseInt(limit));
     sql += ` ORDER BY created_at DESC LIMIT $${params.length}`;
@@ -75,8 +75,47 @@ app.get('/jobs', async (req, res) => {
   }
 });
 
-app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date() }));
+app.get('/health', async (_, res) => {
+  const health = {
+    api: true,
+    postgresql: false,
+    redis: false,
+    workers: false,
+    websocket: true, // running alongside express
+    scheduler: true, // started on boot
+    ts: new Date()
+  };
 
+  try {
+    await query('SELECT 1');
+    health.postgresql = true;
+  } catch (e) {
+    console.error('[health] postgresql failed:', e.message);
+  }
+
+  try {
+    await redis.ping();
+    health.redis = true;
+  } catch (e) {
+    console.error('[health] redis failed:', e.message);
+  }
+
+  try {
+    // Check if there are any active workers (workers with recent heartbeats)
+    const [workerCount] = await query(
+      `SELECT count(DISTINCT worker_id) as count FROM jobs
+       WHERE worker_id IS NOT NULL AND updated_at > now() - interval '2 minutes'`
+    );
+    health.workers = parseInt(workerCount.count) > 0;
+  } catch (e) {
+    console.error('[health] workers check failed:', e.message);
+  }
+
+  res.json({
+    status: Object.values(health).every(v => v === true || v instanceof Date) ? 'ok' : 'degraded',
+    ...health
+  });
+});
 app.get('/workers', async (req, res) => {
   try {
     const workers = await query(
@@ -412,4 +451,4 @@ app.post('/fl/simulate-failure', async (req, res) => {
     console.error('[api] POST /fl/simulate-failure error:', err.message);
     res.status(500).json({ error: err.message });
   }
-});
+});

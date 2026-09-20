@@ -1,40 +1,100 @@
-import { useState, useEffect, useRef } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { useState, useEffect, useRef } from 'react'
+import {
+  LayoutDashboard, Database, Activity, Settings,
+  Zap, ArrowUpRight, ArrowDownRight, Clock, AlertCircle, TrendingUp, CheckCircle2
+} from 'lucide-react'
+import {
+  AreaChart, Area, BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
+} from 'recharts'
 
 const API = "http://localhost:3000";
 const WS  = "ws://localhost:3001";
 
-const STATUS = {
-  done:     { bg: "#0d3d2a", text: "#4ade80", dot: "#22c55e" },
-  running:  { bg: "#0c2340", text: "#60a5fa", dot: "#3b82f6" },
-  pending:  { bg: "#2d2008", text: "#fbbf24", dot: "#f59e0b" },
-  failed:   { bg: "#2d0f0f", text: "#f87171", dot: "#ef4444" },
-  retrying: { bg: "#2d1a08", text: "#fb923c", dot: "#f97316" },
-};
+// ─── palette ────────────────────────────────────────────────────────────────
+const C = {
+  bg:       '#05030E',
+  s1:       '#0C0920',   // surface 1
+  s2:       '#120E2A',   // surface 2
+  border:   '#221A42',
+  lime:     '#CCFF00',   // primary accent
+  pink:     '#FF3CAC',   // secondary accent
+  violet:   '#7B5CE8',   // tertiary
+  amber:    '#FFB800',
+  emerald:  '#00E5A0',
+  text:     '#EDE8F8',
+  muted:    '#5A4B7A',
+  subtle:   '#9385BE',
+}
 
-const QUEUE_COLORS = { high: "#ef4444", default: "#3b82f6", low: "#6b7280" };
+const navItems = [
+  { id: 'dashboard',  label: 'Overview',     icon: LayoutDashboard },
+  { id: 'jobs',       label: 'Jobs',         icon: Database },
+  { id: 'workflows',  label: 'Workflows',    icon: Activity },
+  { id: 'workers',    label: 'Workers',      icon: Zap },
+  { id: 'deadletter', label: 'Dead-letter',  icon: AlertCircle },
+]
 
-const QUEUE_BADGE = {
-  high:    { bg: "#3d0f0f", text: "#fca5a5" },
-  default: { bg: "#0c1f3d", text: "#93c5fd" },
-  low:     { bg: "#1a1a1a", text: "#9ca3af" },
-};
+const JOB_TYPES = [
+  "send_welcome_email","resize_image","generate_invoice",
+  "fraud_check","send_otp_sms","slow_job","fail_always"
+];
+
+// ─── sub-components ─────────────────────────────────────────────────────────
+const Tip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null
+  return (
+    <div style={{ background: C.s2, border: `1px solid ${C.border}`, borderRadius: 10, padding: '10px 14px' }}>
+      <p style={{ color: C.muted, fontFamily: 'JetBrains Mono', fontSize: 11, marginBottom: 6 }}>{label}</p>
+      {payload.map((p, i) => (
+        <p key={i} style={{ color: p.color || p.stroke || C.lime, fontFamily: 'Outfit', fontSize: 13, fontWeight: 600 }}>
+          {p.name}: {typeof p.value === 'number' && !Number.isInteger(p.value) ? p.value.toFixed(1) : p.value}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+function BigStat({ label, value, unit, delta, up, accent }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase' }}>{label}</span>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+        <span style={{ fontFamily: 'DM Serif Display', fontSize: 42, lineHeight: 1, color: accent }}>{value}</span>
+        {unit && <span style={{ fontFamily: 'Outfit', fontSize: 14, color: C.muted }}>{unit}</span>}
+      </div>
+      {delta && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {up ? <ArrowUpRight size={12} color={C.emerald} /> : <ArrowDownRight size={12} color={C.pink} />}
+          <span style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: up ? C.emerald : C.pink }}>{delta}</span>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function StatusPill({ status }) {
-  const c = STATUS[status] || { bg: "#1a1a1a", text: "#9ca3af", dot: "#6b7280" };
+  const isDone = status === 'done';
+  const isRunning = status === 'running';
+  const isFailed = status === 'failed';
+  const isRetrying = status === 'retrying';
+  const isPending = status === 'pending';
+
+  const col = isDone ? C.emerald : isRunning ? C.lime : isFailed ? C.pink : isRetrying ? C.amber : C.muted;
+  
   return (
     <span style={{
-      background: c.bg, color: c.text,
+      background: col + '18', color: col,
       padding: "3px 10px", borderRadius: 20,
-      fontSize: 11, fontWeight: 600,
+      fontSize: 11, fontWeight: 600, fontFamily: 'Outfit',
       display: "inline-flex", alignItems: "center", gap: 5,
-      letterSpacing: ".02em"
+      border: `1px solid ${col}40`
     }}>
       <span style={{
         width: 5, height: 5, borderRadius: "50%",
-        background: c.dot, display: "inline-block",
-        boxShadow: `0 0 6px ${c.dot}`,
-        animation: status === "running" ? "pulse 1.4s infinite" : "none"
+        background: col, display: "inline-block",
+        boxShadow: `0 0 6px ${col}`,
+        animation: isRunning ? "pulse 1.4s infinite" : "none"
       }} />
       {status}
     </span>
@@ -42,75 +102,31 @@ function StatusPill({ status }) {
 }
 
 function QueueBadge({ queue }) {
-  const c = QUEUE_BADGE[queue] || QUEUE_BADGE.default;
+  const col = queue === 'high' ? C.pink : queue === 'default' ? C.violet : C.muted;
   return (
     <span style={{
-      fontSize: 11, padding: "2px 8px", borderRadius: 10,
-      background: c.bg, color: c.text, fontWeight: 500
+      fontSize: 11, padding: "2px 8px", borderRadius: 10, fontFamily: 'Outfit',
+      background: col + '20', color: col, fontWeight: 500, border: `1px solid ${col}40`
     }}>
       {queue}
     </span>
   );
 }
 
-function MetricCard({ label, value, sub, accent }) {
-  return (
-    <div style={{
-      background: "#111827",
-      border: "1px solid #1f2937",
-      borderRadius: 12,
-      padding: "14px 16px",
-      position: "relative",
-      overflow: "hidden",
-      transition: "border-color .2s",
-    }}
-    onMouseEnter={e => e.currentTarget.style.borderColor = accent || "#374151"}
-    onMouseLeave={e => e.currentTarget.style.borderColor = "#1f2937"}
-    >
-      <div style={{
-        position: "absolute", top: 0, left: 0, right: 0,
-        height: 2, background: accent || "#374151", borderRadius: "12px 12px 0 0"
-      }} />
-      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}</div>
-      <div style={{ fontSize: 28, fontWeight: 700, color: "#f9fafb", lineHeight: 1 }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>{sub}</div>}
-    </div>
-  );
-}
-
-const NAV_ITEMS = [
-  { section: "Overview", items: [
-    { key: "dashboard", label: "Dashboard", icon: "▦" },
-    { key: "jobs",      label: "Jobs",      icon: "≣", badgeKey: "pending" },
-    { key: "workflows", label: "Workflows", icon: "⬡" },
-  ]},
-  { section: "System", items: [
-    { key: "workers",    label: "Workers",    icon: "▣" },
-    { key: "deadletter", label: "Dead-letter", icon: "✕", badgeKey: "failed" },
-  ]}
-];
-
-const JOB_TYPES = [
-  "send_welcome_email","resize_image","generate_invoice",
-  "fraud_check","send_otp_sms","slow_job","fail_always"
-];
-
-const ACCENT = {
-  dashboard: "#3b82f6",
-  jobs:      "#8b5cf6",
-  workflows: "#06b6d4",
-  workers:   "#10b981",
-  deadletter:"#ef4444",
-};
-
+// ─── App ─────────────────────────────────────────────────────────────────────
 export default function App() {
+  const [sidebarVisible, setSidebarVisible] = useState(false)
+  const [activeNav, setActiveNav] = useState('dashboard')
+  const [mounted, setMounted] = useState(false)
+  
   const [jobs, setJobs]             = useState([]);
   const [workflows, setWorkflows]   = useState([]);
   const [throughput, setTP]         = useState(Array.from({length:12}, () => ({ t:"", v:0 })));
   const [wsStatus, setWsStatus]     = useState("connecting");
+  const [healthStatus, setHealthStatus] = useState(null);
   const [filter, setFilter]         = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [selected, setSelected]     = useState(null);
-  const [page, setPage]             = useState("dashboard");
   const [showSubmit, setShowSubmit] = useState(false);
   const [submitName, setSubmitName] = useState("send_welcome_email");
   const [submitQueue, setSubmitQueue] = useState("default");
@@ -119,10 +135,18 @@ export default function App() {
   const [nlDescription, setNlDescription] = useState("");
   const [nlLoading, setNlLoading]   = useState(false);
   const [selectedWorkflow, setSelectedWorkflow] = useState(null);
+  
+  const triggerRef = useRef(null)
+  const sidebarRef = useRef(null)
   const wsRef = useRef(null);
 
+  useEffect(() => { setTimeout(() => setMounted(true), 80) }, [])
+
+  const showSidebar  = () => setSidebarVisible(true)
+  const hideSidebar  = () => setSidebarVisible(false)
+
   async function fetchJobs() {
-    try { setJobs(await (await fetch(`${API}/jobs?limit=50`)).json()); }
+    try { setJobs(await (await fetch(`${API}/jobs?limit=200`)).json()); }
     catch(e) { console.error(e); }
   }
   async function fetchWorkflows() {
@@ -133,10 +157,15 @@ export default function App() {
     try { setSelectedWorkflow(await (await fetch(`${API}/workflows/${id}`)).json()); }
     catch(e) { console.error(e); }
   }
+  async function fetchHealth() {
+    try { setHealthStatus(await (await fetch(`${API}/health`)).json()); }
+    catch(e) { console.error(e); }
+  }
 
   useEffect(() => {
     fetchJobs();
     fetchWorkflows();
+    fetchHealth();
     function connect() {
       const ws = new WebSocket(WS);
       wsRef.current = ws;
@@ -147,19 +176,20 @@ export default function App() {
           setJobs(prev => {
             const exists = prev.find(j => j.id === msg.job.id);
             if (exists) return prev.map(j => j.id === msg.job.id ? { ...j, ...msg.job } : j);
-            return [msg.job, ...prev].slice(0, 50);
+            return [msg.job, ...prev].slice(0, 200);
           });
           setTP(prev => {
             const now = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit", second:"2-digit" });
             return [...prev.slice(1), { t: now, v: (prev[prev.length-1]?.v || 0) + 1 }];
           });
+          fetchHealth(); 
         }
       };
       ws.onclose = () => { setWsStatus("reconnecting"); setTimeout(connect, 2000); };
       ws.onerror = () => ws.close();
     }
     connect();
-    const iv = setInterval(() => { fetchJobs(); fetchWorkflows(); }, 5000);
+    const iv = setInterval(() => { fetchJobs(); fetchWorkflows(); fetchHealth(); }, 10000);
     return () => { clearInterval(iv); wsRef.current?.close(); };
   }, []);
 
@@ -219,7 +249,18 @@ export default function App() {
     } catch(e) { showToast(`Requeue failed: ${e.message}`, "error"); }
   }
 
-  const filtered   = filter === "all" ? jobs : jobs.filter(j => j.status === filter);
+  let filtered = filter === "all" ? jobs : jobs.filter(j => j.status === filter);
+  if (searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    filtered = filtered.filter(j => 
+      j.id.toLowerCase().includes(q) || 
+      j.name.toLowerCase().includes(q) || 
+      j.queue.toLowerCase().includes(q) || 
+      (j.worker_id && j.worker_id.toLowerCase().includes(q)) ||
+      j.status.toLowerCase().includes(q)
+    );
+  }
+
   const counts     = jobs.reduce((acc, j) => { acc[j.status] = (acc[j.status]||0)+1; return acc; }, {});
   const queueDepth = ["high","default","low"].map(q => ({
     name: q,
@@ -240,402 +281,441 @@ export default function App() {
   });
   const workers    = Object.entries(workerMap);
   const retrying   = jobs.filter(j => j.status === "retrying");
+  const failedList = jobs.filter(j => j.status === "failed" || j.status === "retrying").slice(0, 5);
   const deadletter = jobs.filter(j => j.status === "failed");
 
-  const accent = ACCENT[page] || "#3b82f6";
-
   return (
-    <div style={{ minHeight:"100vh", background:"#030712", fontFamily:"Inter,system-ui,sans-serif", color:"#f9fafb" }}>
+    <div style={{ width: '100vw', height: '100vh', background: C.bg, overflow: 'hidden', position: 'relative',
+      opacity: mounted ? 1 : 0, transition: 'opacity 0.5s ease', color: C.text }}>
 
-      {/* Top bar */}
-      <div style={{
-        background:"#0a0f1a", borderBottom:"1px solid #1f2937",
-        padding:"0 24px", height:52,
-        display:"flex", alignItems:"center", justifyContent:"space-between",
-        position:"sticky", top:0, zIndex:10
-      }}>
-        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-          <div style={{ fontSize:18, fontWeight:800, letterSpacing:"-.02em" }}>
-            task<span style={{ color: accent }}>queue</span>
+      {/* ── hover trigger zone ── */}
+      <div
+        ref={triggerRef}
+        onMouseEnter={showSidebar}
+        style={{ position: 'fixed', top: 0, left: 0, width: 32, height: '100vh', zIndex: 50, cursor: 'default' }}
+      />
+
+      {/* ── sidebar overlay ── */}
+      <div
+        ref={sidebarRef}
+        onMouseLeave={hideSidebar}
+        style={{
+          position: 'fixed', top: 0, left: 0, height: '100vh', width: 220, zIndex: 40,
+          background: 'rgba(12, 9, 32, 0.96)',
+          backdropFilter: 'blur(20px)',
+          borderRight: `1px solid ${C.border}`,
+          transform: sidebarVisible ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
+          display: 'flex', flexDirection: 'column',
+          boxShadow: sidebarVisible ? '8px 0 40px rgba(0,0,0,0.6)' : 'none',
+        }}
+      >
+        <div style={{ padding: '28px 20px 24px', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 10, background: `linear-gradient(135deg, ${C.lime}, ${C.violet})`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Zap size={16} color="#05030E" strokeWidth={2.5} />
           </div>
-          <span style={{
-            display:"inline-flex", alignItems:"center", gap:5,
-            fontSize:11, fontWeight:500,
-            color: wsStatus === "live" ? "#4ade80" : "#fbbf24",
-            background: wsStatus === "live" ? "#0d3d2a" : "#2d2008",
-            padding:"2px 8px", borderRadius:20,
-            border:`1px solid ${wsStatus === "live" ? "#166534" : "#92400e"}`,
-          }}>
-            <span style={{
-              width:6, height:6, borderRadius:"50%",
-              background: wsStatus === "live" ? "#22c55e" : "#f59e0b",
-              animation: wsStatus === "live" ? "pulse 1.4s infinite" : "none"
-            }} />
-            {wsStatus}
-          </span>
+          <div>
+            <p style={{ fontFamily: 'Outfit', fontWeight: 700, fontSize: 14, color: C.text, margin: 0 }}>TaskQueue</p>
+            <p style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.muted, margin: 0 }}>v1.0.0</p>
+          </div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
-          <button onClick={() => { fetchJobs(); fetchWorkflows(); }} style={{
-            fontSize:12, padding:"6px 14px", borderRadius:8,
-            border:"1px solid #1f2937", background:"transparent",
-            color:"#9ca3af", cursor:"pointer",
-            transition:"all .15s"
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background="#111827"; e.currentTarget.style.color="#f9fafb"; }}
-          onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color="#9ca3af"; }}
-          >↻ Refresh</button>
-          <button onClick={() => setShowSubmit(s => !s)} style={{
-            fontSize:12, padding:"6px 14px", borderRadius:8,
-            border:`1px solid ${accent}`,
-            background: showSubmit ? accent : "transparent",
-            color: showSubmit ? "#fff" : accent,
-            cursor:"pointer", fontWeight:600,
-            transition:"all .15s"
-          }}>+ Enqueue job</button>
+
+        <div style={{ height: 1, background: C.border, margin: '0 16px 16px' }} />
+
+        <nav style={{ flex: 1, padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {navItems.map(({ id, label, icon: Icon }) => {
+            const active = activeNav === id
+            return (
+              <button
+                key={id}
+                onClick={() => { setActiveNav(id); setSidebarVisible(false) }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  width: '100%', borderRadius: 10, padding: '10px 12px',
+                  background: active ? `${C.lime}14` : 'transparent',
+                  border: `1px solid ${active ? C.lime + '30' : 'transparent'}`,
+                  color: active ? C.lime : C.muted,
+                  cursor: 'pointer', textAlign: 'left',
+                  transition: 'all 0.16s ease',
+                  position: 'relative',
+                }}
+                onMouseEnter={e => { if (!active) { e.currentTarget.style.background = '#FFFFFF08'; e.currentTarget.style.color = C.subtle } }}
+                onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.muted } }}
+              >
+                {active && <span style={{ position: 'absolute', left: 0, top: '50%', transform: 'translateY(-50%)', width: 3, height: 18, background: C.lime, borderRadius: '0 3px 3px 0' }} />}
+                <Icon size={16} style={{ flexShrink: 0 }} />
+                <span style={{ fontFamily: 'Outfit', fontWeight: 500, fontSize: 13 }}>{label}</span>
+              </button>
+            )
+          })}
+        </nav>
+
+        <div style={{ margin: 12, padding: '12px 14px', borderRadius: 12, background: C.s2, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 30, height: 30, borderRadius: '50%', background: `linear-gradient(135deg, ${C.pink}, ${C.violet})`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Outfit', fontWeight: 700, fontSize: 11, color: '#fff' }}>OP</div>
+          <div>
+            <p style={{ fontFamily: 'Outfit', fontWeight: 600, fontSize: 12, color: C.text, margin: 0 }}>Operator</p>
+            <p style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.lime, margin: 0 }}>System Healthy</p>
+          </div>
         </div>
       </div>
 
-      {/* Submit panel */}
-      {showSubmit && (
-        <div style={{
-          background:"#0a0f1a", borderBottom:"1px solid #1f2937",
-          padding:"10px 24px", display:"flex", gap:8, alignItems:"center",
-          animation:"slideDown .2s ease"
-        }}>
-          <select value={submitName} onChange={e => setSubmitName(e.target.value)} style={selectStyle}>
-            {JOB_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <select value={submitQueue} onChange={e => setSubmitQueue(e.target.value)} style={selectStyle}>
-            <option value="high">high priority</option>
-            <option value="default">default</option>
-            <option value="low">low priority</option>
-          </select>
-          <select value={submitDelay} onChange={e => setSubmitDelay(e.target.value)} style={selectStyle}>
-            <option value="0">immediately</option>
-            <option value="15">+15 seconds</option>
-            <option value="30">+30 seconds</option>
-            <option value="60">+60 seconds</option>
-          </select>
-          <button onClick={submitJob} style={{
-            fontSize:12, padding:"6px 16px", borderRadius:8,
-            border:"none", background: accent,
-            color:"#fff", cursor:"pointer", fontWeight:600
-          }}>▶ Run</button>
-        </div>
-      )}
+      {/* ── sidebar indicator tab ── */}
+      <div
+        onMouseEnter={showSidebar}
+        style={{
+          position: 'fixed', top: 32, left: 0, zIndex: 41,
+          width: 4, height: 48, borderRadius: '0 4px 4px 0',
+          background: sidebarVisible ? 'transparent' : `linear-gradient(to bottom, ${C.lime}, ${C.violet})`,
+          transition: 'all 0.3s ease', cursor: 'pointer',
+        }}
+      />
 
-      <div style={{ display:"grid", gridTemplateColumns:"200px 1fr" }}>
-        {/* Sidebar */}
-        <div style={{
-          background:"#040810", borderRight:"1px solid #111827",
-          padding:"16px 0", minHeight:"calc(100vh - 52px)",
-          position:"sticky", top:52, alignSelf:"start", height:"calc(100vh - 52px)", overflowY:"auto"
-        }}>
-          {NAV_ITEMS.map(section => (
-            <div key={section.section} style={{ marginBottom:8 }}>
-              <div style={{
-                fontSize:10, fontWeight:700, color:"#374151",
-                padding:"8px 16px 4px", letterSpacing:".1em", textTransform:"uppercase"
-              }}>
-                {section.section}
-              </div>
-              {section.items.map(item => {
-                const isActive = page === item.key;
-                const badgeVal = item.badgeKey ? (counts[item.badgeKey] || 0) : 0;
-                const itemAccent = ACCENT[item.key];
-                return (
-                  <div key={item.key} onClick={() => setPage(item.key)} style={{
-                    display:"flex", alignItems:"center", gap:10,
-                    padding:"8px 16px", fontSize:13, cursor:"pointer",
-                    borderLeft: isActive ? `2px solid ${itemAccent}` : "2px solid transparent",
-                    background: isActive ? `${itemAccent}18` : "transparent",
-                    color: isActive ? itemAccent : "#6b7280",
-                    transition:"all .15s", margin:"1px 0",
-                    fontWeight: isActive ? 600 : 400,
-                  }}
-                  onMouseEnter={e => { if(!isActive) { e.currentTarget.style.background="#111827"; e.currentTarget.style.color="#d1d5db"; }}}
-                  onMouseLeave={e => { if(!isActive) { e.currentTarget.style.background="transparent"; e.currentTarget.style.color="#6b7280"; }}}
-                  >
-                    <span style={{ fontSize:14, opacity: isActive ? 1 : .6 }}>{item.icon}</span>
-                    <span>{item.label}</span>
-                    {badgeVal > 0 && (
-                      <span style={{
-                        marginLeft:"auto", fontSize:10, padding:"1px 6px",
-                        borderRadius:10, background:"#3d0f0f", color:"#fca5a5",
-                        fontWeight:700, minWidth:18, textAlign:"center"
-                      }}>{badgeVal}</span>
-                    )}
-                  </div>
-                );
-              })}
+      {/* ── main content ── */}
+      <div style={{ width: '100%', height: '100vh', overflow: 'hidden auto', padding: '0 0 32px' }}>
+        
+        {/* top strip */}
+        <div style={{ padding: '28px 40px 0', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: wsStatus === "live" ? C.lime : C.amber, display: 'inline-block', boxShadow: `0 0 10px ${wsStatus === "live" ? C.lime : C.amber}` }} />
+              <span style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase' }}>
+                {wsStatus} · API {healthStatus?.api ? 'OK' : 'ERR'} · Redis {healthStatus?.redis ? 'OK' : 'ERR'}
+              </span>
             </div>
-          ))}
+            <h1 style={{ fontFamily: 'DM Serif Display', fontSize: 32, color: C.text, margin: 0, lineHeight: 1.1 }}>
+              {activeNav.charAt(0).toUpperCase() + activeNav.slice(1)} Dashboard
+            </h1>
+            <div style={{ position: "relative", width: 300, marginTop: 12 }}>
+              <input 
+                type="text" 
+                placeholder="Search jobs by ID, name, status..." 
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && filtered.length === 1) {
+                    setSelected(filtered[0]);
+                  }
+                }}
+                style={{
+                  width: "100%", padding: "8px 14px", paddingRight: 30,
+                  borderRadius: 20, border: `1px solid ${C.border}`,
+                  background: C.s1, color: C.text, fontSize: 13, outline: "none",
+                  fontFamily: 'Outfit', transition: "border-color .15s"
+                }}
+                onFocus={e => e.target.style.borderColor = C.violet}
+                onBlur={e => e.target.style.borderColor = C.border}
+              />
+            </div>
+          </div>
+          
+          <div style={{ display: 'flex', gap: 28 }}>
+            <BigStat label="Total Jobs"   value={jobs.length} delta={`${counts.done||0} done`} up accent={C.lime} />
+            <BigStat label="Queued"       value={counts.pending||0} delta="active queue" up accent={C.amber} />
+            <BigStat label="Failed"       value={counts.failed||0} delta={counts.failed ? "needs review" : "all clear"} up={!counts.failed} accent={counts.failed ? C.pink : C.emerald} />
+          </div>
         </div>
 
-        {/* Main content */}
-        <div style={{ padding:"20px", minHeight:"calc(100vh - 52px)" }}>
+        <div style={{ margin: '24px 40px', height: 1, background: C.border }} />
 
-          {/* ── DASHBOARD ── */}
-          {page === "dashboard" && (
-            <>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:14 }}>
-                <MetricCard label="Total Jobs"  value={jobs.length}        sub={`${counts.done||0} completed`}   accent="#3b82f6" />
-                <MetricCard label="Running"     value={counts.running||0}  sub="active right now"                accent="#06b6d4" />
-                <MetricCard label="Pending"     value={counts.pending||0}  sub="waiting in queue"                accent="#f59e0b" />
-                <MetricCard label="Failed"      value={counts.failed||0}   sub={counts.failed ? "need attention" : "all clear"} accent={counts.failed ? "#ef4444" : "#10b981"} />
-              </div>
-
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:12 }}>
-                <div style={card}>
-                  <div style={cardTitle}>Throughput</div>
-                  <ResponsiveContainer width="100%" height={100}>
-                    <LineChart data={throughput}>
-                      <XAxis dataKey="t" tick={{ fontSize:9, fill:"#4b5563" }} interval="preserveStartEnd" />
-                      <YAxis tick={{ fontSize:9, fill:"#4b5563" }} width={20} />
-                      <Tooltip contentStyle={{ background:"#111827", border:"1px solid #1f2937", borderRadius:6, fontSize:11, color:"#f9fafb" }} />
-                      <Line type="monotone" dataKey="v" stroke="#3b82f6" dot={false} strokeWidth={2} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div style={card}>
-                  <div style={cardTitle}>Queue Depth</div>
-                  {queueDepth.map(q => (
-                    <div key={q.name} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-                      <span style={{ fontSize:11, width:52, color:"#6b7280", fontFamily:"monospace" }}>{q.name}</span>
-                      <div style={{ flex:1, height:8, background:"#1f2937", borderRadius:4, overflow:"hidden" }}>
-                        <div style={{
-                          width:`${Math.min(q.count/maxQ*100,100)}%`,
-                          height:"100%",
-                          background: QUEUE_COLORS[q.name],
-                          borderRadius:4,
-                          transition:"width .4s ease",
-                          boxShadow:`0 0 8px ${QUEUE_COLORS[q.name]}66`
-                        }} />
-                      </div>
-                      <span style={{ fontSize:11, color:"#4b5563", minWidth:16, textAlign:"right" }}>{q.count}</span>
-                    </div>
-                  ))}
-                  <div style={{ fontSize:11, color:"#374151", marginTop:8 }}>
-                    {workers.length} worker{workers.length !== 1?"s":""} · {counts.done||0} jobs done
+        <div style={{ padding: '0 40px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          
+          {activeNav === 'dashboard' && (
+            <div style={{ display: 'grid', gap: 16, gridTemplateColumns: '1fr 1fr 300px' }}>
+              {/* ── throughput chart ── */}
+              <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 24px', gridColumn: '1 / 3' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+                  <div>
+                    <p style={{ fontFamily: 'Outfit', fontWeight: 600, fontSize: 15, color: C.text, margin: 0 }}>Job Activity Throughput</p>
+                    <p style={{ fontFamily: 'Outfit', fontSize: 12, color: C.muted, margin: '3px 0 0' }}>Jobs processed over time</p>
                   </div>
+                  <button onClick={() => setShowSubmit(!showSubmit)} style={{
+                    padding: '6px 12px', borderRadius: 8, background: C.lime+'10', border: `1px solid ${C.lime}40`,
+                    color: C.lime, fontFamily: 'Outfit', fontSize: 12, cursor: 'pointer', fontWeight: 500
+                  }}>+ Enqueue Job</button>
                 </div>
-              </div>
 
-              <div style={{ ...card, marginBottom:12 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
-                  <div style={cardTitle}>Retry Activity</div>
-                  <span style={{ fontSize:11, color:"#fb923c" }}>{retrying.length} retrying</span>
-                </div>
-                {retrying.length === 0 && (
-                  <div style={{ fontSize:12, color:"#374151", display:"flex", alignItems:"center", gap:6 }}>
-                    <span style={{ color:"#22c55e" }}>✓</span> No jobs retrying — system healthy
+                {showSubmit && (
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 16, padding: '12px', background: C.s2, borderRadius: 12, border: `1px solid ${C.border}` }}>
+                     <select value={submitName} onChange={e => setSubmitName(e.target.value)} style={selectStyle}>
+                        {JOB_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <select value={submitQueue} onChange={e => setSubmitQueue(e.target.value)} style={selectStyle}>
+                        <option value="high">high priority</option>
+                        <option value="default">default</option>
+                        <option value="low">low priority</option>
+                      </select>
+                      <button onClick={submitJob} style={{
+                        fontSize:12, padding:"6px 16px", borderRadius:8, fontFamily: 'Outfit',
+                        border:"none", background: C.lime, color: C.s1, cursor:"pointer", fontWeight:600
+                      }}>Run</button>
                   </div>
                 )}
-                {retrying.slice(0,5).map(j => (
-                  <div key={j.id} style={{ display:"flex", alignItems:"flex-start", gap:8, padding:"7px 0", borderBottom:"1px solid #111827", fontSize:12 }}>
-                    <span style={{ color:"#f97316", fontSize:14 }}>↻</span>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontFamily:"monospace", fontSize:11, color:"#d1d5db" }}>{j.id.slice(0,8)}… · {j.name}</div>
-                      <div style={{ fontSize:11, color:"#4b5563" }}>{j.error || "retrying with backoff"}</div>
-                    </div>
-                    <span style={{ fontSize:11, color:"#ef4444" }}>attempt {j.attempts}/{j.max_attempts||5}</span>
-                  </div>
-                ))}
+
+                <ResponsiveContainer width="100%" height={200}>
+                  <AreaChart data={throughput} margin={{ top: 4, right: 0, left: -28, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="gLime" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%"  stopColor={C.lime} stopOpacity={0.18} />
+                        <stop offset="95%" stopColor={C.lime} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke={C.border} strokeDasharray="3 6" vertical={false} />
+                    <XAxis dataKey="t" tick={{ fill: C.muted, fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: C.muted, fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<Tip />} />
+                    <Area type="monotone" dataKey="v" name="Throughput" stroke={C.lime} strokeWidth={2} fill="url(#gLime)" dot={false} activeDot={{ r: 5, fill: C.lime }} />
+                  </AreaChart>
+                </ResponsiveContainer>
               </div>
-            </>
+
+              {/* ── queue depth bars ── */}
+              <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 24px' }}>
+                <p style={{ fontFamily: 'Outfit', fontWeight: 600, fontSize: 15, color: C.text, margin: '0 0 4px' }}>Queue Depth</p>
+                <p style={{ fontFamily: 'Outfit', fontSize: 12, color: C.muted, margin: '0 0 20px' }}>Pending & running jobs</p>
+                {queueDepth.map(d => {
+                  const col = d.name === 'high' ? C.pink : d.name === 'default' ? C.violet : C.subtle;
+                  return (
+                  <div key={d.name} style={{ marginBottom: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                      <span style={{ fontFamily: 'Outfit', fontSize: 12, color: C.subtle, textTransform: 'capitalize' }}>{d.name}</span>
+                      <span style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: col }}>{d.count}</span>
+                    </div>
+                    <div style={{ height: 5, borderRadius: 99, background: C.s2, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${Math.min(d.count/maxQ*100, 100)}%`, background: col, borderRadius: 99, transition: 'width 1s cubic-bezier(0.4,0,0.2,1)' }} />
+                    </div>
+                  </div>
+                )})}
+                
+                <div style={{ marginTop: 24, padding: '12px', borderRadius: 10, background: C.s2, border: `1px solid ${C.border}` }}>
+                  <p style={{ fontFamily: 'Outfit', fontSize: 12, color: C.muted, margin: 0, display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Workers Online:</span> <span style={{color: C.lime}}>{workers.length}</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* ── recent failures feed ── */}
+              <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 20px', display: 'flex', flexDirection: 'column', gridColumn: '1 / 2' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+                  <p style={{ fontFamily: 'Outfit', fontWeight: 600, fontSize: 15, color: C.text, margin: 0 }}>Recent Failures</p>
+                  <span style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.amber }}>{retrying.length} retrying</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14, flex: 1 }}>
+                  {failedList.length === 0 && (
+                    <p style={{ fontFamily: 'Outfit', fontSize: 13, color: C.muted }}>No recent failures. System healthy.</p>
+                  )}
+                  {failedList.map((a, i) => {
+                    const col = a.status === 'retrying' ? C.amber : C.pink;
+                    const Icon = a.status === 'retrying' ? Clock : AlertCircle;
+                    return (
+                      <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 8, background: col + '18', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
+                          <Icon size={13} color={col} />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <p style={{ fontFamily: 'Outfit', fontWeight: 500, fontSize: 12, color: C.text, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</p>
+                          <p style={{ fontFamily: 'Inter, sans-serif', fontSize: 11, color: C.muted, margin: '2px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.error || 'failed'}</p>
+                        </div>
+                        <span style={{ fontFamily: 'JetBrains Mono', fontSize: 10, color: C.muted, flexShrink: 0, marginTop: 2 }}>{new Date(a.updated_at).toLocaleTimeString()}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+              
+              {/* Active Jobs Preview */}
+              <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 24px', gridColumn: '2 / 4' }}>
+                 <p style={{ fontFamily: 'Outfit', fontWeight: 600, fontSize: 15, color: C.text, margin: '0 0 16px' }}>Active Jobs</p>
+                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        {["ID", "Job", "Queue", "Status"].map(h => (
+                           <th key={h} style={{ textAlign: 'left', paddingBottom: 10, color: C.muted, fontSize: 10, fontFamily: 'JetBrains Mono', fontWeight: 400, textTransform: 'uppercase' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.slice(0,6).map(j => (
+                        <tr key={j.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                          <td style={{ padding: '10px 0', fontFamily: 'JetBrains Mono', fontSize: 11, color: C.subtle }}>{j.id.slice(0,8)}</td>
+                          <td style={{ padding: '10px 0', fontFamily: 'Outfit', fontSize: 13, color: C.text }}>{j.name}</td>
+                          <td style={{ padding: '10px 0' }}><QueueBadge queue={j.queue} /></td>
+                          <td style={{ padding: '10px 0' }}><StatusPill status={j.status} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                 </table>
+                 <p style={{ fontFamily: 'Outfit', fontSize: 12, color: C.lime, margin: '12px 0 0', cursor: 'pointer' }} onClick={() => setActiveNav('jobs')}>View all jobs →</p>
+              </div>
+
+            </div>
           )}
 
-          {/* ── JOBS TABLE ── */}
-          {(page === "dashboard" || page === "jobs") && (
-            <div style={{ ...card, padding:0 }}>
-              <div style={{ padding:"10px 14px", borderBottom:"1px solid #111827", display:"flex", gap:6, flexWrap:"wrap" }}>
+          {/* ── jobs table view ── */}
+          {(activeNav === 'jobs' || activeNav === 'deadletter') && (
+            <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 24px' }}>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
                 {["all","running","pending","done","failed","retrying"].map(s => {
-                  const sc = STATUS[s];
                   const active = filter === s;
                   return (
                     <button key={s} onClick={() => setFilter(s)} style={{
-                      fontSize:11, padding:"4px 12px", borderRadius:20, cursor:"pointer",
-                      border: active ? `1px solid ${sc?.dot||"#3b82f6"}` : "1px solid #1f2937",
-                      background: active ? `${sc?.bg||"#0c2340"}` : "transparent",
-                      color: active ? (sc?.text||"#60a5fa") : "#4b5563",
-                      fontWeight: active ? 600 : 400,
-                      transition:"all .15s"
+                      fontSize: 12, padding: "6px 14px", borderRadius: 20, cursor: "pointer", fontFamily: 'Outfit',
+                      border: active ? `1px solid ${C.lime}50` : `1px solid ${C.border}`,
+                      background: active ? `${C.lime}14` : 'transparent',
+                      color: active ? C.lime : C.muted, transition: "all .15s"
                     }}>
-                      {s} {counts[s] ? <span style={{ opacity:.7 }}>{counts[s]}</span> : ""}
+                      {s} {counts[s] ? <span style={{ opacity:.7, fontSize: 10, marginLeft: 4 }}>{counts[s]}</span> : ""}
                     </button>
                   );
                 })}
               </div>
 
-              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
-                <thead>
-                  <tr>
-                    {["Job Name","Queue","Status","Attempts","Created"].map(h => (
-                      <th key={h} style={{
-                        textAlign:"left", padding:"8px 14px",
-                        color:"#374151", fontWeight:600, fontSize:10,
-                        borderBottom:"1px solid #111827",
-                        textTransform:"uppercase", letterSpacing:".06em",
-                        background:"#040810"
-                      }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.length === 0 && (
-                    <tr><td colSpan={5} style={{ padding:28, textAlign:"center", color:"#374151", fontSize:13 }}>
-                      No jobs yet — click "+ Enqueue job" to get started
-                    </td></tr>
-                  )}
-                  {filtered.map(job => (
-                    <tr key={job.id}
-                      onClick={() => setSelected(selected?.id === job.id ? null : job)}
-                      style={{
-                        borderBottom:"1px solid #0a0f1a",
-                        cursor:"pointer",
-                        background: selected?.id === job.id ? "#0c1f3d" : "transparent",
-                        transition:"background .1s"
-                      }}
-                      onMouseEnter={e => { if(selected?.id !== job.id) e.currentTarget.style.background="#0a0f1a"; }}
-                      onMouseLeave={e => { if(selected?.id !== job.id) e.currentTarget.style.background="transparent"; }}
-                    >
-                      <td style={{ padding:"9px 14px", fontFamily:"monospace", fontSize:11, color:"#e2e8f0" }}>{job.name}</td>
-                      <td style={{ padding:"9px 14px" }}><QueueBadge queue={job.queue} /></td>
-                      <td style={{ padding:"9px 14px" }}><StatusPill status={job.status} /></td>
-                      <td style={{ padding:"9px 14px", color:"#4b5563" }}>{job.attempts||0}</td>
-                      <td style={{ padding:"9px 14px", color:"#374151", fontSize:11 }}>{new Date(job.created_at).toLocaleTimeString()}</td>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", minWidth: 600 }}>
+                  <thead>
+                    <tr>
+                      {["ID", "Job", "Queue", "Worker", "Status", "Attempts", "Created"].map(h => (
+                        <th key={h} style={{
+                          textAlign:"left", padding:"12px",
+                          color: C.muted, fontWeight:400, fontSize:10, fontFamily: 'JetBrains Mono',
+                          borderBottom: `1px solid ${C.border}`,
+                          textTransform:"uppercase"
+                        }}>{h}</th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {(activeNav === 'deadletter' ? deadletter : filtered).map(job => (
+                      <tr key={job.id}
+                        onClick={() => setSelected(selected?.id === job.id ? null : job)}
+                        style={{ borderBottom:`1px solid ${C.border}`, cursor:"pointer",
+                          background: selected?.id === job.id ? C.s2 : "transparent",
+                          transition:"background .1s"
+                        }}
+                        onMouseEnter={e => { if(selected?.id !== job.id) e.currentTarget.style.background=C.s2; }}
+                        onMouseLeave={e => { if(selected?.id !== job.id) e.currentTarget.style.background="transparent"; }}
+                      >
+                        <td style={{ padding:"12px", fontFamily:"JetBrains Mono", fontSize:11, color:C.subtle }}>{job.id.slice(0,8)}</td>
+                        <td style={{ padding:"12px", fontFamily:"Outfit", fontSize:13, color:C.text, fontWeight: 500 }}>{job.name}</td>
+                        <td style={{ padding:"12px" }}><QueueBadge queue={job.queue} /></td>
+                        <td style={{ padding:"12px", fontFamily:"JetBrains Mono", fontSize:11, color:C.subtle }}>{job.worker_id ? job.worker_id.slice(0,8) : "—"}</td>
+                        <td style={{ padding:"12px" }}><StatusPill status={job.status} /></td>
+                        <td style={{ padding:"12px", color:C.muted, fontSize: 12 }}>{job.attempts||0}</td>
+                        <td style={{ padding:"12px", color:C.muted, fontSize:11, fontFamily: 'JetBrains Mono' }}>{new Date(job.created_at).toLocaleTimeString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
 
               {selected && (
                 <div style={{
-                  borderTop:"1px solid #1f2937", padding:"14px 16px",
-                  background:"#040810", animation:"slideDown .15s ease"
+                  marginTop: 16, border:`1px solid ${C.border}`, padding:"20px", borderRadius: 12,
+                  background: C.s2, animation:"slideDown .15s ease"
                 }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
-                    <span style={{ fontFamily:"monospace", fontSize:10, color:"#374151" }}>{selected.id}</span>
-                    <button onClick={() => setSelected(null)} style={{ border:"none", background:"none", cursor:"pointer", color:"#4b5563", fontSize:18, lineHeight:1 }}>✕</button>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:12 }}>
+                    <span style={{ fontFamily:"JetBrains Mono", fontSize:12, color:C.subtle }}>{selected.id}</span>
+                    <button onClick={() => setSelected(null)} style={{ border:"none", background:"none", cursor:"pointer", color:C.muted, fontSize:18 }}>✕</button>
                   </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginBottom:10 }}>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:16, marginBottom:16 }}>
                     {[["Name",selected.name],["Queue",selected.queue],["Status",selected.status],
                       ["Attempts",`${selected.attempts||0}/${selected.max_attempts||5}`],
                       ["Worker",selected.worker_id||"—"],
                       ["Updated",new Date(selected.updated_at).toLocaleTimeString()]
                     ].map(([k,v]) => (
-                      <div key={k} style={{
-                        background:"#0a0f1a", border:"1px solid #1f2937",
-                        borderRadius:8, padding:"8px 10px"
-                      }}>
-                        <div style={{ fontSize:10, color:"#374151", marginBottom:2, textTransform:"uppercase", letterSpacing:".06em" }}>{k}</div>
-                        <div style={{ fontSize:12, fontWeight:500, color:"#e2e8f0" }}>{v}</div>
+                      <div key={k}>
+                        <div style={{ fontSize:10, color:C.muted, marginBottom:4, textTransform:"uppercase", fontFamily: 'JetBrains Mono' }}>{k}</div>
+                        <div style={{ fontSize:13, fontWeight:500, color:C.text, fontFamily: 'Outfit' }}>{v}</div>
                       </div>
                     ))}
                   </div>
                   {selected.error && (
-                    <div style={{ background:"#2d0f0f", border:"1px solid #7f1d1d", borderRadius:8, padding:"8px 10px", marginBottom:8, fontSize:12, color:"#f87171" }}>
+                    <div style={{ background: C.pink+'10', border:`1px solid ${C.pink}40`, borderRadius:8, padding:"12px", marginBottom:12, fontSize:13, color:C.pink, fontFamily: 'Outfit' }}>
                       {selected.error}
                     </div>
                   )}
                   {selected.payload && (
-                    <pre style={{ background:"#040810", border:"1px solid #1f2937", color:"#94a3b8", borderRadius:8, padding:10, fontSize:11, overflow:"auto", margin:0 }}>
+                    <pre style={{ background:C.bg, border:`1px solid ${C.border}`, color:C.subtle, borderRadius:8, padding:16, fontSize:12, overflow:"auto", margin:0, fontFamily: 'JetBrains Mono' }}>
                       {JSON.stringify(selected.payload, null, 2)}
                     </pre>
+                  )}
+                  
+                  {activeNav === 'deadletter' && (
+                     <button onClick={() => requeueJob(selected.id)} style={{
+                        marginTop: 16, fontSize:12, padding:"8px 16px", borderRadius:8, fontFamily: 'Outfit',
+                        border:`1px solid ${C.border}`, background:C.bg, color:C.text, cursor:"pointer"
+                      }}>↻ Requeue Job</button>
                   )}
                 </div>
               )}
             </div>
           )}
 
-          {/* ── WORKFLOWS ── */}
-          {page === "workflows" && (
-            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              <div style={{
-                ...card,
-                background:"linear-gradient(135deg, #0a0f1a 0%, #0c1f3d 100%)",
-                border:"1px solid #1e3a5f"
-              }}>
-                <div style={{ fontSize:14, fontWeight:700, marginBottom:4, color:"#93c5fd" }}>✦ Generate workflow</div>
-                <div style={{ fontSize:12, color:"#374151", marginBottom:10 }}>
-                  Describe in plain English — the LLM converts it to a DAG and runs it automatically.
+          {/* ── workflows ── */}
+          {activeNav === 'workflows' && (
+             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 24px' }}>
+                  <p style={{ fontFamily: 'Outfit', fontWeight: 600, fontSize: 16, color: C.lime, margin: '0 0 8px' }}>✦ Generate Workflow via AI</p>
+                  <p style={{ fontFamily: 'Outfit', fontSize: 13, color: C.muted, margin: '0 0 16px' }}>Describe in plain English to automatically construct a DAG</p>
+                  <textarea
+                    value={nlDescription} onChange={e => setNlDescription(e.target.value)}
+                    placeholder='e.g. "Send welcome email and resize profile picture in parallel. After both finish, generate invoice."'
+                    style={{
+                      width:"100%", minHeight:80, fontSize:13, padding:14,
+                      borderRadius:12, border:`1px solid ${C.border}`,
+                      background:C.s2, color:C.text, resize:"vertical", fontFamily:"Outfit", outline:"none"
+                    }}
+                  />
+                  <button onClick={generateWorkflow} disabled={nlLoading} style={{
+                    marginTop:16, fontSize:13, padding:"10px 24px", borderRadius:10, fontFamily: 'Outfit',
+                    border:"none", background: nlLoading ? C.s2 : C.lime, color: nlLoading ? C.muted : C.bg,
+                    cursor: nlLoading ? "default" : "pointer", fontWeight:600, transition:"all .15s"
+                  }}>
+                    {nlLoading ? "Generating…" : "✦ Generate & Run"}
+                  </button>
                 </div>
-                <textarea
-                  value={nlDescription}
-                  onChange={e => setNlDescription(e.target.value)}
-                  placeholder='e.g. "Send welcome email and resize profile picture in parallel. After both finish, generate invoice."'
-                  style={{
-                    width:"100%", minHeight:72, fontSize:12, padding:10,
-                    borderRadius:8, border:"1px solid #1e3a5f",
-                    background:"#040810", color:"#e2e8f0",
-                    resize:"vertical", fontFamily:"inherit", boxSizing:"border-box",
-                    outline:"none"
-                  }}
-                />
-                <button onClick={generateWorkflow} disabled={nlLoading} style={{
-                  marginTop:8, fontSize:12, padding:"7px 18px", borderRadius:8,
-                  border:"none",
-                  background: nlLoading ? "#1e3a5f" : "#3b82f6",
-                  color: nlLoading ? "#4b5563" : "#fff",
-                  cursor: nlLoading ? "default" : "pointer",
-                  fontWeight:600, transition:"all .15s"
-                }}>
-                  {nlLoading ? "Generating…" : "✦ Generate & Run"}
-                </button>
-              </div>
 
-              <div style={{ ...card, padding:0 }}>
-                <div style={{ padding:"10px 14px", borderBottom:"1px solid #111827", fontSize:12, fontWeight:600, color:"#6b7280" }}>
-                  Recent workflows
-                </div>
-                {workflows.length === 0 && (
-                  <div style={{ padding:24, textAlign:"center", color:"#374151", fontSize:12 }}>
-                    No workflows yet — generate one above or POST to /workflows
-                  </div>
-                )}
-                {workflows.map(wf => (
-                  <div key={wf.id} onClick={() => fetchWorkflowDetail(wf.id)} style={{
-                    display:"flex", alignItems:"center", gap:10,
-                    padding:"10px 14px", borderBottom:"1px solid #0a0f1a",
-                    cursor:"pointer", transition:"background .1s"
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.background="#0a0f1a"}
-                  onMouseLeave={e => e.currentTarget.style.background="transparent"}
-                  >
-                    <span style={{ fontSize:18, color:"#06b6d4" }}>⬡</span>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontSize:12, fontWeight:500, fontFamily:"monospace", color:"#e2e8f0" }}>{wf.name}</div>
-                      <div style={{ fontSize:11, color:"#374151" }}>{wf.id.slice(0,8)}… · {new Date(wf.created_at).toLocaleString()}</div>
+                <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 24px' }}>
+                  <p style={{ fontFamily: 'Outfit', fontWeight: 600, fontSize: 15, color: C.text, margin: '0 0 16px' }}>Recent Workflows</p>
+                  {workflows.map(wf => (
+                    <div key={wf.id} onClick={() => fetchWorkflowDetail(wf.id)} style={{
+                      display:"flex", alignItems:"center", gap:16,
+                      padding:"16px", borderBottom:`1px solid ${C.border}`,
+                      cursor:"pointer", borderRadius: 12, transition:"background .1s"
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background=C.s2}
+                    onMouseLeave={e => e.currentTarget.style.background="transparent"}
+                    >
+                      <Activity size={24} color={C.violet} />
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:14, fontWeight:500, fontFamily:"Outfit", color:C.text }}>{wf.name}</div>
+                        <div style={{ fontSize:11, color:C.subtle, fontFamily: 'JetBrains Mono', marginTop: 4 }}>{wf.id.slice(0,8)}… · {new Date(wf.created_at).toLocaleString()}</div>
+                      </div>
+                      <StatusPill status={wf.status} />
                     </div>
-                    <StatusPill status={wf.status} />
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
 
-              {selectedWorkflow && (
-                <div style={{ ...card, animation:"slideDown .15s ease" }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:12 }}>
+                {selectedWorkflow && (
+                <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 24px' }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:16 }}>
                     <div>
-                      <div style={{ fontSize:14, fontWeight:600, fontFamily:"monospace", color:"#e2e8f0" }}>{selectedWorkflow.name}</div>
-                      <div style={{ fontSize:11, color:"#374151" }}>{selectedWorkflow.id}</div>
+                      <div style={{ fontSize:16, fontWeight:600, fontFamily:"Outfit", color:C.text }}>{selectedWorkflow.name}</div>
+                      <div style={{ fontSize:11, color:C.subtle, fontFamily: 'JetBrains Mono', marginTop: 4 }}>{selectedWorkflow.id}</div>
                     </div>
-                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                      <StatusPill status={selectedWorkflow.status} />
-                      <button onClick={() => setSelectedWorkflow(null)} style={{ border:"none", background:"none", cursor:"pointer", color:"#4b5563", fontSize:18 }}>✕</button>
-                    </div>
+                    <button onClick={() => setSelectedWorkflow(null)} style={{ border:"none", background:"none", cursor:"pointer", color:C.muted, fontSize:20 }}>✕</button>
                   </div>
-                  <div style={{ fontSize:10, fontWeight:700, color:"#374151", marginBottom:8, textTransform:"uppercase", letterSpacing:".08em" }}>Steps</div>
+                  <div style={{ fontSize:11, fontWeight:600, color:C.muted, marginBottom:12, textTransform:"uppercase", fontFamily: 'JetBrains Mono' }}>Workflow Steps</div>
                   {(selectedWorkflow.steps||[]).map(step => (
                     <div key={step.id} style={{
-                      display:"flex", alignItems:"center", gap:10,
-                      padding:"9px 0", borderBottom:"1px solid #111827"
+                      display:"flex", alignItems:"center", gap:16,
+                      padding:"12px 0", borderBottom:`1px solid ${C.border}`
                     }}>
                       <div style={{ flex:1 }}>
-                        <div style={{ fontSize:12, fontWeight:500, color:"#d1d5db" }}>{step.name}</div>
-                        <div style={{ fontSize:11, color:"#374151" }}>
-                          {step.job_name} · {step.queue}
-                          {step.depends_on?.length > 0 && <> · after: {step.depends_on.join(", ")}</>}
+                        <div style={{ fontSize:14, fontWeight:500, color:C.text, fontFamily: 'Outfit' }}>{step.name}</div>
+                        <div style={{ fontSize:12, color:C.muted, marginTop: 4, fontFamily: 'Outfit' }}>
+                          <span style={{ color: C.subtle }}>{step.job_name}</span> · <QueueBadge queue={step.queue} />
+                          {step.depends_on?.length > 0 && <span style={{ marginLeft: 8 }}>· after: {step.depends_on.join(", ")}</span>}
                         </div>
                       </div>
                       <StatusPill status={step.job_status||step.status} />
@@ -643,128 +723,85 @@ export default function App() {
                   ))}
                 </div>
               )}
-            </div>
+             </div>
           )}
 
-          {/* ── WORKERS ── */}
-          {page === "workers" && (
-            <div style={card}>
-              <div style={{ fontSize:14, fontWeight:700, marginBottom:2, color:"#34d399" }}>Workers</div>
-              <div style={{ fontSize:12, color:"#374151", marginBottom:14 }}>
-                Derived from worker_id on processed jobs. Run <code style={{ background:"#111827", padding:"1px 6px", borderRadius:4, color:"#94a3b8" }}>cd worker && npm run dev</code> in additional terminals to scale.
-              </div>
-              {workers.length === 0 && (
-                <div style={{ fontSize:12, color:"#374151" }}>No workers have processed a job yet.</div>
-              )}
-              {workers.map(([id, info]) => (
-                <div key={id} style={{
-                  display:"flex", alignItems:"center", gap:12,
-                  padding:"10px 0", borderBottom:"1px solid #111827"
-                }}>
-                  <div style={{
-                    width:36, height:36, borderRadius:10,
-                    background:"#0d2d20", color:"#34d399",
-                    display:"flex", alignItems:"center", justifyContent:"center",
-                    fontSize:12, fontWeight:700, flexShrink:0,
-                    border:"1px solid #166534"
+          {/* ── workers ── */}
+          {activeNav === 'workers' && (
+             <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 18, padding: '22px 24px' }}>
+               <p style={{ fontFamily: 'Outfit', fontWeight: 600, fontSize: 16, color: C.text, margin: '0 0 8px' }}>Active Workers</p>
+               <p style={{ fontFamily: 'Outfit', fontSize: 13, color: C.muted, margin: '0 0 24px' }}>Run <code style={{ background:C.s2, padding:"2px 6px", borderRadius:4, color:C.text }}>npm run dev</code> in worker directory to scale.</p>
+               
+               {workers.length === 0 && <p style={{ color: C.subtle, fontFamily: 'Outfit' }}>No workers active.</p>}
+               {workers.map(([id, info]) => {
+                const isRunning = info.lastJob.status === "running";
+                return (
+                  <div key={id} style={{
+                    display:"flex", alignItems:"center", gap:16,
+                    padding:"16px 0", borderBottom:`1px solid ${C.border}`
                   }}>
-                    {id.slice(0,2).toUpperCase()}
-                  </div>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:12, fontWeight:500, color:"#d1d5db", fontFamily:"monospace" }}>{id}</div>
-                    <div style={{ fontSize:11, color:"#374151" }}>
-                      last: {info.lastJob.name} · {info.done} completed
+                    <div style={{
+                      width:48, height:48, borderRadius:14,
+                      background: C.s2, color: C.lime,
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      border:`1px solid ${C.border}`
+                    }}>
+                      <Zap size={20} />
                     </div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ fontSize:14, fontWeight:600, color:C.text, fontFamily:"JetBrains Mono" }}>{id}</div>
+                        <span style={{ fontSize:10, color: isRunning ? C.bg : C.lime, background: isRunning ? C.lime : C.lime+'20', padding: "2px 8px", borderRadius: 10, fontFamily: 'Outfit', fontWeight: 600 }}>
+                          {isRunning ? "BUSY" : "ONLINE"}
+                        </span>
+                      </div>
+                      <div style={{ fontSize:13, color:C.muted, marginTop: 6, fontFamily: 'Outfit' }}>
+                        Last Job: <span style={{ color: C.subtle }}>{info.lastJob.name}</span> · {info.done} jobs completed
+                      </div>
+                      <div style={{ fontSize: 11, color: C.muted, marginTop: 4, fontFamily: 'JetBrains Mono' }}>
+                        Heartbeat: {new Date(info.lastJob.updated_at).toLocaleTimeString()}
+                      </div>
+                    </div>
+                    <StatusPill status={info.lastJob.status} />
                   </div>
-                  <StatusPill status={info.lastJob.status} />
-                </div>
-              ))}
-            </div>
+                );
+              })}
+             </div>
           )}
 
-          {/* ── DEAD-LETTER ── */}
-          {page === "deadletter" && (
-            <div style={card}>
-              <div style={{ fontSize:14, fontWeight:700, marginBottom:2, color:"#f87171" }}>Dead-letter Queue</div>
-              <div style={{ fontSize:12, color:"#374151", marginBottom:14 }}>
-                Jobs that exhausted all retry attempts. Requeue resets attempts and tries again.
-              </div>
-              {deadletter.length === 0 && (
-                <div style={{ fontSize:12, color:"#374151", display:"flex", alignItems:"center", gap:6 }}>
-                  <span style={{ color:"#22c55e" }}>✓</span> No permanently failed jobs
-                </div>
-              )}
-              {deadletter.map(j => (
-                <div key={j.id} style={{
-                  display:"flex", alignItems:"flex-start", gap:10,
-                  padding:"10px 0", borderBottom:"1px solid #111827"
-                }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:11, fontFamily:"monospace", color:"#d1d5db" }}>{j.id} · {j.name}</div>
-                    <div style={{ fontSize:11, color:"#f87171", marginTop:2 }}>{j.error}</div>
-                    <div style={{ fontSize:11, color:"#374151", marginTop:1 }}>{j.attempts} attempts · {j.queue}</div>
-                  </div>
-                  <button onClick={() => requeueJob(j.id)} style={{
-                    fontSize:11, padding:"5px 12px", borderRadius:8,
-                    border:"1px solid #374151", background:"transparent",
-                    color:"#9ca3af", cursor:"pointer", flexShrink:0,
-                    transition:"all .15s"
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.background="#111827"; e.currentTarget.style.color="#f9fafb"; }}
-                  onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color="#9ca3af"; }}
-                  >↻ Requeue</button>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
-
+      
       {/* Toast */}
       {toast && (
         <div style={{
-          position:"fixed", bottom:20, right:20,
-          background: toast.type === "success" ? "#0d3d2a" : toast.type === "error" ? "#2d0f0f" : "#111827",
-          border:`1px solid ${toast.type === "success" ? "#166534" : toast.type === "error" ? "#7f1d1d" : "#1f2937"}`,
-          color: toast.type === "success" ? "#4ade80" : toast.type === "error" ? "#f87171" : "#e2e8f0",
-          borderRadius:10, padding:"10px 16px", fontSize:12, maxWidth:320,
-          boxShadow:"0 4px 20px rgba(0,0,0,.6)",
-          animation:"slideUp .2s ease",
-          zIndex:100
+          position:"fixed", bottom:24, right:24,
+          background: C.s1, border:`1px solid ${toast.type === "success" ? C.lime : C.pink}`,
+          color: toast.type === "success" ? C.lime : C.pink,
+          borderRadius:12, padding:"12px 20px", fontSize:13, fontFamily: 'Outfit',
+          boxShadow:"0 8px 30px rgba(0,0,0,0.5)",
+          animation:"slideUp .2s ease", zIndex:100, fontWeight: 500
         }}>
-          {toast.type === "success" ? "✓ " : toast.type === "error" ? "✕ " : ""}{toast.msg}
+          {toast.msg}
         </div>
       )}
 
       <style>{`
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-        @keyframes slideDown { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
-        @keyframes slideUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
-        body { margin:0; background:#030712; }
+        @keyframes slideDown { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes slideUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+        body { margin:0; background: ${C.bg}; }
         * { box-sizing:border-box; }
-        ::-webkit-scrollbar { width:4px; height:4px; }
-        ::-webkit-scrollbar-track { background:#040810; }
-        ::-webkit-scrollbar-thumb { background:#1f2937; border-radius:4px; }
-        textarea:focus, select:focus { outline:none; border-color:#3b82f6 !important; }
-        option { background:#0a0f1a; color:#e2e8f0; }
+        ::-webkit-scrollbar { width:6px; height:6px; }
+        ::-webkit-scrollbar-track { background: ${C.bg}; }
+        ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius:6px; }
       `}</style>
     </div>
-  );
+  )
 }
 
-const card = {
-  background:"#0a0f1a",
-  border:"1px solid #111827",
-  borderRadius:12,
-  padding:"14px 16px",
-};
-
-const cardTitle = {
-  fontSize:13, fontWeight:600, marginBottom:10, color:"#9ca3af"
-};
-
 const selectStyle = {
-  fontSize:12, padding:"6px 10px", borderRadius:8,
-  border:"1px solid #1f2937", background:"#040810",
-  color:"#e2e8f0", cursor:"pointer"
+  fontSize:12, padding:"6px 12px", borderRadius:8, fontFamily: 'Outfit',
+  border:`1px solid #221A42`, background:"#0C0920",
+  color:"#EDE8F8", cursor:"pointer", outline: "none",
 };
