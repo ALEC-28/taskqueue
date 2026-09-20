@@ -64,3 +64,30 @@ CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow ON workflow_steps(workflo
 CREATE TRIGGER workflows_updated_at
   BEFORE UPDATE ON workflows
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- Federated Learning Clients table
+CREATE TABLE IF NOT EXISTS fl_clients (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id           TEXT UNIQUE NOT NULL,
+  name                TEXT NOT NULL,
+  cpu_capability      JSONB NOT NULL DEFAULT '{}',
+  memory_capability   JSONB NOT NULL DEFAULT '{}',
+  gpu_capability      JSONB DEFAULT NULL,
+  network_latency     NUMERIC NOT NULL DEFAULT 0.0,
+  data_quality_score  NUMERIC NOT NULL DEFAULT 1.0,
+  reliability_score   NUMERIC NOT NULL DEFAULT 1.0,
+  status              TEXT NOT NULL DEFAULT 'available'
+                        CHECK (status IN ('available','busy','unhealthy','offline')),
+  failure_count       INT NOT NULL DEFAULT 0,
+  successful_task_count INT NOT NULL DEFAULT 0,
+  last_heartbeat      TIMESTAMPTZ DEFAULT now(),
+  created_at          TIMESTAMPTZ DEFAULT now(),
+  updated_at          TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fl_clients_client_id ON fl_clients(client_id);
+CREATE INDEX IF NOT EXISTS idx_fl_clients_status    ON fl_clients(status);
+
+CREATE TRIGGER fl_clients_updated_at
+  BEFORE UPDATE ON fl_clients
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();

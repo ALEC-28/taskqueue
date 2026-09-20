@@ -2,7 +2,7 @@ const { Pool } = require('pg');
 
 const pool = new Pool({
   host:     process.env.POSTGRES_HOST || 'localhost',
-  port:     process.env.POSTGRES_PORT || 5432,
+  port:     process.env.POSTGRES_PORT || 55432,
   database: process.env.POSTGRES_DB   || 'taskqueue',
   user:     process.env.POSTGRES_USER || 'admin',
   password: process.env.POSTGRES_PASS || 'secret',
