@@ -1,3 +1,4 @@
+require('dotenv').config();
 const Redis = require('ioredis');
 const http = require('http');
 const { Pool } = require('pg');
@@ -11,10 +12,10 @@ const redis = new Redis({
 });
 
 const db = new Pool({
-  host:     process.env.POSTGRES_HOST || 'localhost',
-  port:     process.env.POSTGRES_PORT || 55432,
-  database: process.env.POSTGRES_DB   || 'taskqueue',
-  user:     process.env.POSTGRES_USER || 'admin',
+  host: process.env.POSTGRES_HOST || 'localhost',
+  port: process.env.POSTGRES_PORT || 55432,
+  database: process.env.POSTGRES_DB || 'taskqueue',
+  user: process.env.POSTGRES_USER || 'admin',
   password: process.env.POSTGRES_PASS || 'secret',
 });
 
@@ -25,10 +26,10 @@ const redisScheduler = new Redis({
 });
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
-const QUEUES    = ['queue:high', 'queue:default', 'queue:low'];
+const QUEUES = ['queue:high', 'queue:default', 'queue:low'];
 const HEARTBEAT_INTERVAL = 10_000; // ping every 10s
-const HEARTBEAT_TTL      = 35;     // Redis key expires after 35s
-const STALE_THRESHOLD    = 30;     // jobs with no heartbeat for 30s get requeued
+const HEARTBEAT_TTL = 35;     // Redis key expires after 35s
+const STALE_THRESHOLD = 30;     // jobs with no heartbeat for 30s get requeued
 const SCHEDULER_INTERVAL = 30_000; // check for stale jobs every 30s
 
 console.log(`[worker] starting — id: ${WORKER_ID}`);
@@ -82,8 +83,16 @@ const handlers = {
     console.log(`  → [FL] Completed round ${fl_round} training task on client '${client_id}'`);
 
     if (client_id) {
+      // On success: increment total_rounds + successful_rounds, reset consecutive_failures
       await db.query(
-        `UPDATE fl_clients SET status = 'available', successful_task_count = successful_task_count + 1, last_heartbeat = now() WHERE client_id = $1`,
+        `UPDATE fl_clients
+         SET status                = 'active',
+             successful_task_count = successful_task_count + 1,
+             total_rounds          = total_rounds + 1,
+             successful_rounds     = successful_rounds + 1,
+             consecutive_failures  = 0,
+             last_heartbeat        = now()
+         WHERE client_id = $1`,
         [client_id]
       );
     }
@@ -97,6 +106,47 @@ const handlers = {
 
 
 // ── Heartbeat ──────────────────────────────────────────────
+// Worker Process Presence Heartbeat
+// Registers presence in Redis every 5s so API and Dashboard know this worker is active.
+const PRESENCE_TTL = 15;
+const PRESENCE_INTERVAL = 5000;
+
+function startWorkerPresence() {
+  const key = `worker:presence:${WORKER_ID}`;
+  const startTime = new Date().toISOString();
+
+  const ping = async () => {
+    try {
+      const data = JSON.stringify({
+        worker_id: WORKER_ID,
+        host: os.hostname(),
+        pid: process.pid,
+        started_at: startTime,
+        last_ping: new Date().toISOString(),
+        queues: QUEUES,
+        status: 'online'
+      });
+      await redis.setex(key, PRESENCE_TTL, data);
+      await redis.sadd('active_workers_set', WORKER_ID);
+    } catch (err) {
+      console.error('[worker-presence] ping error:', err.message);
+    }
+  };
+
+  ping();
+  setInterval(ping, PRESENCE_INTERVAL);
+
+  const cleanup = async () => {
+    try {
+      await redis.del(key);
+      await redis.srem('active_workers_set', WORKER_ID);
+    } catch (e) {}
+  };
+
+  process.on('SIGINT', async () => { await cleanup(); process.exit(0); });
+  process.on('SIGTERM', async () => { await cleanup(); process.exit(0); });
+}
+
 // While a job is running, ping Redis every 10s so the scheduler
 // knows this worker is alive. Key auto-expires after 35s.
 function startHeartbeat(jobId) {
@@ -115,7 +165,7 @@ function startHeartbeat(jobId) {
 
 function stopHeartbeat({ key, interval }) {
   clearInterval(interval);
-  redis.del(key).catch(() => {});
+  redis.del(key).catch(() => { });
 }
 
 // ── Crash Recovery Scheduler ───────────────────────────────
@@ -140,14 +190,14 @@ async function runScheduler() {
           `UPDATE jobs SET status = 'failed', error = 'worker crashed — max attempts reached' WHERE id = $1`,
           [job.id]
         );
-        console.log(`[scheduler] job ${job.id.slice(0,8)}… permanently failed`);
+        console.log(`[scheduler] job ${job.id.slice(0, 8)}… permanently failed`);
       } else {
         await db.query(
           `UPDATE jobs SET status = 'pending', worker_id = NULL WHERE id = $1`,
           [job.id]
         );
         await redisScheduler.lpush(`queue:${job.queue}`, job.id);
-        console.log(`[scheduler] ↩ requeued stale job ${job.id.slice(0,8)}…`);
+        console.log(`[scheduler] ↩ requeued stale job ${job.id.slice(0, 8)}…`);
       }
     }
   } catch (err) {
@@ -157,6 +207,9 @@ async function runScheduler() {
 
 // ── Main Loop ──────────────────────────────────────────────
 async function run() {
+  // Start presence heartbeat
+  startWorkerPresence();
+
   // Start the crash recovery scheduler
   setTimeout(() => { runScheduler(); setInterval(runScheduler, SCHEDULER_INTERVAL); }, 2000);
   console.log(`[scheduler] running every ${SCHEDULER_INTERVAL / 1000}s`);
@@ -191,7 +244,7 @@ async function processJob(jobId) {
     return;
   }
 
-  console.log(`[worker] picked up job ${jobId.slice(0,8)}… (${job.name}) from ${job.queue}`);
+  console.log(`[worker] picked up job ${jobId.slice(0, 8)}… (${job.name}) from ${job.queue}`);
 
   // Mark running + start heartbeat
   await db.query(
@@ -214,18 +267,18 @@ async function processJob(jobId) {
     const { rows: currentJobRows } = await db.query(`SELECT status, worker_id, payload FROM jobs WHERE id = $1`, [jobId]);
     const currentJob = currentJobRows[0];
     if (!currentJob || currentJob.status === 'done') {
-      console.warn(`[worker] ⚠️ Duplicate execution detected: job ${jobId.slice(0,8)}… already completed. Suppressing redundant completion.`);
+      console.warn(`[worker] ⚠️ Duplicate execution detected: job ${jobId.slice(0, 8)}… already completed. Suppressing redundant completion.`);
       return;
     }
     const currentPayload = currentJob.payload || {};
     const originalPayload = job.payload || {};
     if (originalPayload.client_id && currentPayload.client_id && originalPayload.client_id !== currentPayload.client_id) {
-      console.warn(`[worker] ⚠️ Job ${jobId.slice(0,8)}… was reassigned from '${originalPayload.client_id}' to '${currentPayload.client_id}' while running. Suppressing stale result.`);
+      console.warn(`[worker] ⚠️ Job ${jobId.slice(0, 8)}… was reassigned from '${originalPayload.client_id}' to '${currentPayload.client_id}' while running. Suppressing stale result.`);
       return;
     }
 
     await db.query(`UPDATE jobs SET status = 'done', error = NULL WHERE id = $1`, [jobId]);
-    console.log(`[worker] ✓ job ${jobId.slice(0,8)}… done in ${duration}ms`);
+    console.log(`[worker] ✓ job ${jobId.slice(0, 8)}… done in ${duration}ms`);
     // Notify workflow engine if this is a workflow step
     if (originalPayload._workflow_id) {
       notifyWorkflow(originalPayload._workflow_id, originalPayload._step_id, true, null);
@@ -234,17 +287,22 @@ async function processJob(jobId) {
   } catch (err) {
     stopHeartbeat(hb);
     const duration = Date.now() - start;
-    console.error(`[worker] ✗ job ${jobId.slice(0,8)}… failed after ${duration}ms:`, err.message);
+    console.error(`[worker] ✗ job ${jobId.slice(0, 8)}… failed after ${duration}ms:`, err.message);
 
     const payload = job.payload || {};
     let replacementClient = null;
 
     if (payload.client_id) {
-      // Mark assigned client unhealthy/offline
+      // On failure: increment total_rounds, failure_count, consecutive_failures.
+      // If consecutive_failures reaches 3, put client into cooldown (2 rounds).
       await db.query(
         `UPDATE fl_clients
-         SET failure_count = failure_count + 1, status = 'unhealthy', last_heartbeat = now()
-         WHERE client_id = $1`,
+         SET failure_count        = failure_count + 1,
+            total_rounds         = total_rounds + 1,
+            consecutive_failures = CASE WHEN consecutive_failures + 1 >= 3 THEN 0 ELSE consecutive_failures + 1 END,
+            cooldown_rounds_left = CASE WHEN consecutive_failures + 1 >= 3 THEN 2 ELSE cooldown_rounds_left END,
+            last_heartbeat       = now()
+        WHERE client_id = $1`
         [payload.client_id]
       );
 
@@ -259,7 +317,7 @@ async function processJob(jobId) {
     }
 
     if (replacementClient && job.attempts < job.max_attempts) {
-      console.log(`[worker] 🔄 Dynamic Client Replacement: reassigning job ${jobId.slice(0,8)}… from '${payload.client_id}' to '${replacementClient.client_id}'`);
+      console.log(`[worker] 🔄 Dynamic Client Replacement: reassigning job ${jobId.slice(0, 8)}… from '${payload.client_id}' to '${replacementClient.client_id}'`);
       const newPayload = { ...payload, client_id: replacementClient.client_id };
       await db.query(
         `UPDATE jobs SET payload = $1, status = 'pending', worker_id = NULL, error = $2 WHERE id = $3`,
@@ -272,7 +330,7 @@ async function processJob(jobId) {
         `UPDATE jobs SET status = 'failed', error = $1 WHERE id = $2`,
         [err.message, jobId]
       );
-      console.log(`[worker] job ${jobId.slice(0,8)}… permanently failed after ${job.max_attempts} attempts`);
+      console.log(`[worker] job ${jobId.slice(0, 8)}… permanently failed after ${job.max_attempts} attempts`);
       if (payload._workflow_id) notifyWorkflow(payload._workflow_id, payload._step_id, false, err.message);
     } else {
       const backoffMs = Math.pow(2, job.attempts) * 1000;
@@ -281,7 +339,7 @@ async function processJob(jobId) {
         `UPDATE jobs SET status = 'retrying', error = $1, run_at = $2 WHERE id = $3`,
         [err.message, runAt, jobId]
       );
-      console.log(`[worker] job ${jobId.slice(0,8)}… retrying in ${backoffMs / 1000}s`);
+      console.log(`[worker] job ${jobId.slice(0, 8)}… retrying in ${backoffMs / 1000}s`);
       setTimeout(async () => {
         await redis.lpush(`queue:${job.queue}`, jobId);
         await db.query(`UPDATE jobs SET status = 'pending' WHERE id = $1`, [jobId]);
@@ -311,6 +369,6 @@ function sleep(ms) {
 }
 
 process.on('SIGTERM', () => { console.log('[worker] shutting down'); process.exit(0); });
-process.on('SIGINT',  () => { console.log('[worker] shutting down'); process.exit(0); });
+process.on('SIGINT', () => { console.log('[worker] shutting down'); process.exit(0); });
 
 run();

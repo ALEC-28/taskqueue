@@ -1,3 +1,4 @@
+require('dotenv').config();
 const assert = require('assert');
 const { query } = require('./db');
 const {
@@ -59,7 +60,7 @@ async function runFL_O1_Tests() {
   );
   const staleList = await detectStaleClients(30);
   assert(staleList.some(c => c.client_id === 'fl-node-002'), 'fl-node-002 should be marked stale/offline');
-  
+
   const [refetchedClient2] = await query(`SELECT * FROM fl_clients WHERE client_id = $1`, ['fl-node-002']);
   assert.strictEqual(refetchedClient2.status, 'offline');
   console.log('  ✓ Stale client correctly detected and marked offline\n');
