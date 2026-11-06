@@ -37,3 +37,4 @@ fl-service/.venv/
 fl-service/data/
 fl-service/fl_store/
 fl-service/__pycache__/
+api.zip

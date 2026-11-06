@@ -8,6 +8,7 @@
     "dev": "node --watch index.js"
   },
   "dependencies": {
+    "dotenv": "^18.0.1",
     "ioredis": "^5.3.2",
     "pg": "^8.11.3"
   }

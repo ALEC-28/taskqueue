@@ -90,4 +90,42 @@ CREATE INDEX IF NOT EXISTS idx_fl_clients_status    ON fl_clients(status);
 
 CREATE TRIGGER fl_clients_updated_at
   BEFORE UPDATE ON fl_clients
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ─── Objective 2: Intelligent Client Selection ──────────────────────────────
+
+-- FL Rounds: one record per FL training round
+CREATE TABLE IF NOT EXISTS fl_rounds (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  round_number  INT NOT NULL,
+  strategy      TEXT NOT NULL DEFAULT 'intelligent'
+                  CHECK (strategy IN ('intelligent', 'random')),
+  k             INT NOT NULL DEFAULT 3,
+  status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending','running','done','failed')),
+  started_at    TIMESTAMPTZ,
+  completed_at  TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fl_rounds_number   ON fl_rounds(round_number);
+CREATE INDEX IF NOT EXISTS idx_fl_rounds_strategy ON fl_rounds(strategy);
+
+-- FL Selection Results: per-client scores and selection decisions per round
+CREATE TABLE IF NOT EXISTS fl_selection_results (
+  id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  round_id             UUID NOT NULL REFERENCES fl_rounds(id) ON DELETE CASCADE,
+  client_id            TEXT NOT NULL,
+  reliability_score    NUMERIC(8,4) NOT NULL DEFAULT 0,
+  compute_score        NUMERIC(8,4) NOT NULL DEFAULT 0,
+  network_score        NUMERIC(8,4) NOT NULL DEFAULT 0,
+  data_quality_score   NUMERIC(8,4) NOT NULL DEFAULT 0,
+  availability_score   NUMERIC(8,4) NOT NULL DEFAULT 0,
+  total_score          NUMERIC(8,4) NOT NULL DEFAULT 0,
+  rank                 INT NOT NULL,
+  selected             BOOLEAN NOT NULL DEFAULT false,
+  created_at           TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fl_selection_round  ON fl_selection_results(round_id);
+CREATE INDEX IF NOT EXISTS idx_fl_selection_client ON fl_selection_results(client_id);

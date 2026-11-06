@@ -1,11 +1,10 @@
+require('dotenv').config();
 const { startScheduler } = require('./scheduler');
 const { startWebSocketServer, broadcastJobUpdate } = require('./ws');
 const express = require('express');
 const cors = require('cors');
 const { query } = require('./db');
-const { enqueue } = require('./queue');
-
-const app = express();
+const { enqueue, redis } = require('./queue'); const app = express();
 app.use(cors());
 app.use(express.json());
 
@@ -15,6 +14,30 @@ app.post('/jobs', async (req, res) => {
 
   if (!name) {
     return res.status(400).json({ error: 'name is required' });
+  }
+
+  const count = parseInt(req.body.count || 1, 10);
+  if (count > 1) {
+    const batchCount = Math.min(count, 100);
+    try {
+      const createdJobs = [];
+      for (let i = 0; i < batchCount; i++) {
+        const [job] = await query(
+          `INSERT INTO jobs (name, queue, payload, max_attempts, run_at)
+           VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)
+           RETURNING id, name, queue, status, created_at, run_at`,
+          [name, queue, JSON.stringify(payload), max_attempts, delay_seconds]
+        );
+        if (delay_seconds === 0) await enqueue(queue, job.id);
+        broadcastJobUpdate(job);
+        createdJobs.push(job);
+      }
+      console.log(`[api] batch jobs created: ${createdJobs.length} x ${name} in ${queue}`);
+      return res.status(201).json({ ok: true, count: createdJobs.length, jobs: createdJobs });
+    } catch (err) {
+      console.error('[api] POST /jobs batch error:', err.message);
+      return res.status(500).json({ error: 'failed to create batch jobs' });
+    }
   }
 
   try {
@@ -34,6 +57,37 @@ app.post('/jobs', async (req, res) => {
   } catch (err) {
     console.error('[api] POST /jobs error:', err.message);
     res.status(500).json({ error: 'failed to create job' });
+  }
+});
+
+app.post('/jobs/bulk', async (req, res) => {
+  const { name, queue = 'default', payload = {}, max_attempts = 5 } = req.body;
+  const count = Math.min(Math.max(parseInt(req.body.count || 1, 10), 1), 100);
+  const delay_seconds = parseInt(req.body.delay_seconds || 0, 10);
+
+  if (!name) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+
+  try {
+    const createdJobs = [];
+    for (let i = 0; i < count; i++) {
+      const [job] = await query(
+        `INSERT INTO jobs (name, queue, payload, max_attempts, run_at)
+         VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)
+         RETURNING id, name, queue, status, created_at, run_at`,
+        [name, queue, JSON.stringify(payload), max_attempts, delay_seconds]
+      );
+      if (delay_seconds === 0) await enqueue(queue, job.id);
+      broadcastJobUpdate(job);
+      createdJobs.push(job);
+    }
+
+    console.log(`[api] bulk jobs created: ${count} x ${name} in ${queue}`);
+    res.status(201).json({ ok: true, count: createdJobs.length, jobs: createdJobs });
+  } catch (err) {
+    console.error('[api] POST /jobs/bulk error:', err.message);
+    res.status(500).json({ error: 'failed to bulk create jobs' });
   }
 });
 
@@ -101,12 +155,15 @@ app.get('/health', async (_, res) => {
   }
 
   try {
-    // Check if there are any active workers (workers with recent heartbeats)
-    const [workerCount] = await query(
-      `SELECT count(DISTINCT worker_id) as count FROM jobs
-       WHERE worker_id IS NOT NULL AND updated_at > now() - interval '2 minutes'`
-    );
-    health.workers = parseInt(workerCount.count) > 0;
+    const keys = await redis.keys('worker:presence:*');
+    health.workers = keys.length > 0;
+    if (!health.workers) {
+      const [workerCount] = await query(
+        `SELECT count(DISTINCT worker_id) as count FROM jobs
+         WHERE worker_id IS NOT NULL AND updated_at > now() - interval '2 minutes'`
+      );
+      health.workers = parseInt(workerCount.count) > 0;
+    }
   } catch (e) {
     console.error('[health] workers check failed:', e.message);
   }
@@ -118,13 +175,27 @@ app.get('/health', async (_, res) => {
 });
 app.get('/workers', async (req, res) => {
   try {
-    const workers = await query(
+    const keys = await redis.keys('worker:presence:*');
+    const onlineWorkers = [];
+    for (const key of keys) {
+      const raw = await redis.get(key);
+      if (raw) {
+        try { onlineWorkers.push(JSON.parse(raw)); } catch (e) {}
+      }
+    }
+
+    const history = await query(
       `SELECT DISTINCT ON (worker_id) worker_id, id as current_job_id, updated_at as last_heartbeat
        FROM jobs
        WHERE worker_id IS NOT NULL
        ORDER BY worker_id, updated_at DESC`
     );
-    res.json(workers);
+
+    res.json({
+      online_count: onlineWorkers.length,
+      online_workers: onlineWorkers,
+      history: history
+    });
   } catch (err) {
     console.error('[api] GET /workers error:', err.message);
     res.status(500).json({ error: 'failed to fetch workers' });
@@ -133,6 +204,11 @@ app.get('/workers', async (req, res) => {
 
 const { registerClient, getClients, updateHeartbeat } = require('./flClient');
 
+// ── Mount FL Client Registry router BEFORE /:id routes ──────────────────────
+const flClientRegistry = require('./flClientRegistry');
+app.use('/fl', flClientRegistry);
+
+// Legacy /fl/clients/register still works (delegates to old flClient.js)
 app.post('/fl/clients/register', async (req, res) => {
   try {
     const client = await registerClient(req.body);
@@ -141,16 +217,6 @@ app.post('/fl/clients/register', async (req, res) => {
   } catch (err) {
     console.error('[api] POST /fl/clients/register error:', err.message);
     res.status(400).json({ error: err.message });
-  }
-});
-
-app.get('/fl/clients', async (req, res) => {
-  try {
-    const clients = await getClients(req.query);
-    res.json(clients);
-  } catch (err) {
-    console.error('[api] GET /fl/clients error:', err.message);
-    res.status(500).json({ error: 'failed to list FL clients' });
   }
 });
 
@@ -451,4 +517,187 @@ app.post('/fl/simulate-failure', async (req, res) => {
     console.error('[api] POST /fl/simulate-failure error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  OBJECTIVE 2 — Intelligent Client Selection Routes
+// ═══════════════════════════════════════════════════════════════════════════
+
+const {
+  createAndRunRound,
+  getRoundDetail,
+  listRounds,
+  getClientScores,
+  syncRoundStatus,
+} = require('./flRound');
+const { runExperiment, runAblation, assertAblationCap } = require('./flExperiment');
+const { registerSimulatedClients }     = require('./simulatedClients');
+
+// ── GET /fl/clients/scores ───────────────────────────────────────────────────
+// Score all currently registered FL clients (no round created).
+// Used by the dashboard "Live Client Scores" panel.
+app.get('/fl/clients/scores', async (req, res) => {
+  try {
+    const scores = await getClientScores();
+    res.json(scores);
+  } catch (err) {
+    console.error('[api] GET /fl/clients/scores error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /fl/rounds ──────────────────────────────────────────────────────────
+// Body: { round_number, k?, strategy?, weights?, duration_ms?, fail_prob?, queue?, seed? }
+app.post('/fl/rounds', async (req, res) => {
+  const {
+    round_number,
+    k = 3,
+    strategy = 'intelligent',
+    weights,
+    duration_ms = 800,
+    fail_prob = 0,
+    queue = 'default',
+    seed = null,
+  } = req.body || {};
+
+  if (round_number === undefined || round_number === null) {
+    return res.status(400).json({ error: 'round_number is required' });
+  }
+
+  try {
+    const result = await createAndRunRound({ round_number, k, strategy, weights, duration_ms, fail_prob, queue, seed });
+    console.log(`[api] FL round ${round_number} started (strategy=${strategy})`);
+    broadcastEvent({ type: 'fl_round_started', ...result.round, selected_clients: result.selection.selected.map(s => s.client_id) });
+    res.status(201).json(result);
+  } catch (err) {
+    console.error('[api] POST /fl/rounds error:', err.message || err);
+    res.status(err.code || 400).json({ error: err.message || err });
+  }
+});
+
+// ── GET /fl/rounds ───────────────────────────────────────────────────────────
+// List all FL rounds (newest first) with aggregate selection stats.
+app.get('/fl/rounds', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit || 50, 10);
+    const rounds = await listRounds(limit);
+    res.json(rounds);
+  } catch (err) {
+    console.error('[api] GET /fl/rounds error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /fl/rounds/:id ───────────────────────────────────────────────────────
+// Get full detail for a specific FL round: selection scores, jobs, status.
+app.get('/fl/rounds/:id', async (req, res) => {
+  try {
+    const detail = await getRoundDetail(req.params.id);
+    if (!detail) return res.status(404).json({ error: 'round not found' });
+    res.json(detail);
+  } catch (err) {
+    console.error('[api] GET /fl/rounds/:id error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /fl/rounds/:id/sync ─────────────────────────────────────────────────
+// Sync the round status based on current job states.
+app.post('/fl/rounds/:id/sync', async (req, res) => {
+  try {
+    const status = await syncRoundStatus(req.params.id);
+    if (!status) return res.status(404).json({ error: 'round not found or no jobs' });
+    res.json(status);
+  } catch (err) {
+    console.error('[api] POST /fl/rounds/:id/sync error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /fl/experiment ──────────────────────────────────────────────────────
+// Run the full O2 baseline comparison experiment.
+// Body: { rounds?, k?, duration_ms?, fail_prob?, reset? }
+// This is a long-running operation — client should poll for completion.
+app.post('/fl/experiment', async (req, res) => {
+  const {
+    rounds     = 5,
+    k          = 3,
+    duration_ms = 600,
+    fail_prob  = 0.15,
+    reset      = true,
+  } = req.body || {};
+
+  try {
+    console.log(`[api] POST /fl/experiment — starting O2 comparison experiment`);
+    broadcastEvent({ type: 'experiment_started', config: { rounds, k, duration_ms, fail_prob } });
+
+    const results = await runExperiment({ rounds, k, duration_ms, fail_prob, reset });
+
+    broadcastEvent({ type: 'experiment_completed', experiment_id: results.experiment_id, comparison: results.comparison });
+    res.json(results);
+  } catch (err) {
+    console.error('[api] POST /fl/experiment error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /fl/setup-clients ───────────────────────────────────────────────────
+app.post('/fl/setup-clients', async (req, res) => {
+  try {
+    const clients = await registerSimulatedClients();
+    console.log(`[api] POST /fl/setup-clients — ${clients.length} simulated clients registered`);
+    res.json({ ok: true, count: clients.length, clients: clients.map(c => c.client_id) });
+  } catch (err) {
+    console.error('[api] POST /fl/setup-clients error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /fl/ablation ────────────────────────────────────────────────────────
+// Start a background ablation study. Returns job_id immediately.
+app.post('/fl/ablation', async (req, res) => {
+  try {
+    const { weight_configs, seeds = [42], rounds = 5, k = 3, duration_ms = 600, fail_prob = 0.15 } = req.body || {};
+    if (!weight_configs || !Array.isArray(weight_configs) || weight_configs.length === 0) {
+      return res.status(400).json({ error: 'weight_configs[] is required' });
+    }
+    if (!Array.isArray(seeds) || seeds.length === 0 || !Number.isInteger(rounds) || rounds < 1) {
+      return res.status(400).json({ error: 'seeds[] and integer rounds>=1 required' });
+    }
+    assertAblationCap(weight_configs.length, seeds.length, rounds);
+    // Create ablation record
+    const [ablation] = await query(
+      `INSERT INTO fl_ablation_runs (config) VALUES ($1) RETURNING *`,
+      [JSON.stringify({ weight_configs, seeds, rounds, k, duration_ms, fail_prob })]
+    );
+
+    // Fire and forget
+    runAblation({ weight_configs, seeds, rounds, k, duration_ms, fail_prob, ablationId: ablation.id })
+      .then(() => console.log(`[api] ablation ${ablation.id} completed`))
+      .catch(err => console.error(`[api] ablation ${ablation.id} failed:`, err.message || err));
+
+    res.status(202).json({ job_id: ablation.id, status: 'pending' });
+  } catch (err) {
+    console.error('[api] POST /fl/ablation error:', err.message || err);
+    res.status(typeof err.code === 'number' ? err.code : 500).json({ error: err.message || String(err) }); 
+   }
+}
+);
+
+// ── GET /fl/ablation/:id ─────────────────────────────────────────────────────
+app.get('/fl/ablation/:id', async (req, res) => {
+  try {
+    const [ablation] = await query(`SELECT * FROM fl_ablation_runs WHERE id = $1`, [req.params.id]);
+    if (!ablation) return res.status(404).json({ error: 'ablation run not found' });
+    res.json(ablation);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Global error handler (maps {code:N} throws to HTTP N) ────────────────────
+app.use((err, _req, res, _next) => {
+  const status = typeof err.code === 'number' && err.code >= 400 && err.code < 600 ? err.code : 500;
+  console.error(`[api] error ${status}:`, err.message || err);
+  res.status(status).json({ error: err.message || 'Internal server error' });
 });
